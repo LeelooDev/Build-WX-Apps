@@ -1,0 +1,32 @@
+{
+  "name": "wx-agent-mcp",
+  "version": "0.1.0",
+  "description": "微信小程序开发的 MCP server：让 Claude / Codex / Cursor 等 AI 工具能编译、运行、截图、驱动 UI、读日志、把报错映射回源码。",
+  "type": "module",
+  "bin": {
+    "wx-agent-mcp": "bin/wx-agent-mcp.js"
+  },
+  "files": [
+    "bin",
+    "src"
+  ],
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.29.0",
+    "wx-agent-core": "^0.1.0",
+    "zod": "^3.25.76"
+  },
+  "engines": {
+    "node": ">=18.17"
+  },
+  "license": "MIT",
+  "author": "LeelooDev",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/LeelooDev/Build-WX-Apps.git",
+    "directory": "packages/mcp"
+  },
+  "homepage": "https://github.com/LeelooDev/Build-WX-Apps#readme",
+  "bugs": {
+    "url": "https://github.com/LeelooDev/Build-WX-Apps/issues"
+  }
+}

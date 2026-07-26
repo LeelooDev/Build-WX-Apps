@@ -1,0 +1,20 @@
+{
+  "name": "wx-agent",
+  "version": "0.1.0",
+  "description": "让 Claude Code 真正能开发微信小程序：编译、在开发者工具里跑起来、截图、驱动 UI、读 console 日志、把运行时报错映射回 .vue/.js 源码。支持原生小程序、uni-app（含 HBuilderX 工程一键补齐 CLI 编译能力）、Taro。",
+  "author": {
+    "name": "LeelooDev"
+  },
+  "license": "MIT",
+  "keywords": [
+    "wechat",
+    "miniprogram",
+    "weapp",
+    "uni-app",
+    "taro",
+    "devtools",
+    "automation",
+    "debugging"
+  ],
+  "homepage": "https://github.com/LeelooDev/Build-WX-Apps"
+}

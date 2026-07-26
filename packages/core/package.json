@@ -1,0 +1,32 @@
+{
+  "name": "wx-agent-core",
+  "version": "0.1.0",
+  "description": "wx-agent 引擎：微信开发者工具控制、uni-app 编译、automator 会话、日志采集、报错源码映射、UI 驱动与画面捕获。",
+  "type": "module",
+  "main": "src/index.js",
+  "exports": {
+    ".": "./src/index.js",
+    "./*": "./src/*.js"
+  },
+  "files": [
+    "src"
+  ],
+  "dependencies": {
+    "miniprogram-automator": "^0.12.1",
+    "source-map": "^0.7.4"
+  },
+  "engines": {
+    "node": ">=18.17"
+  },
+  "license": "MIT",
+  "author": "LeelooDev",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/LeelooDev/Build-WX-Apps.git",
+    "directory": "packages/core"
+  },
+  "homepage": "https://github.com/LeelooDev/Build-WX-Apps#readme",
+  "bugs": {
+    "url": "https://github.com/LeelooDev/Build-WX-Apps/issues"
+  }
+}

@@ -1,0 +1,30 @@
+{
+  "name": "wx-agent-cli",
+  "version": "0.1.0",
+  "description": "wxctl —— 微信小程序开发的命令行控制器：编译、运行、截图、点击、看日志、报错回溯源码。人和 AI 用同一套。",
+  "type": "module",
+  "bin": {
+    "wxctl": "bin/wxctl.js"
+  },
+  "files": [
+    "bin",
+    "src"
+  ],
+  "dependencies": {
+    "wx-agent-core": "^0.1.0"
+  },
+  "engines": {
+    "node": ">=18.17"
+  },
+  "license": "MIT",
+  "author": "LeelooDev",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/LeelooDev/Build-WX-Apps.git",
+    "directory": "packages/cli"
+  },
+  "homepage": "https://github.com/LeelooDev/Build-WX-Apps#readme",
+  "bugs": {
+    "url": "https://github.com/LeelooDev/Build-WX-Apps/issues"
+  }
+}

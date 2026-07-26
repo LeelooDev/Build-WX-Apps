@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "wx-agent": {
+      "command": "npx",
+      "args": ["-y", "wx-agent-mcp"]
+    }
+  }
+}

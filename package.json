@@ -1,0 +1,37 @@
+{
+  "name": "wx-agent",
+  "version": "0.1.0",
+  "private": true,
+  "description": "让 AI 编码助手能真正开发微信小程序：编译、运行、截图、点击、读日志、报错映射回源码。",
+  "type": "module",
+  "workspaces": [
+    "packages/*"
+  ],
+  "scripts": {
+    "wxctl": "node packages/cli/bin/wxctl.js",
+    "mcp": "node packages/mcp/bin/wx-agent-mcp.js",
+    "test": "node --test \"packages/*/test/**/*.test.js\""
+  },
+  "engines": {
+    "node": ">=18.17"
+  },
+  "license": "MIT",
+  "author": "LeelooDev",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/LeelooDev/Build-WX-Apps.git"
+  },
+  "homepage": "https://github.com/LeelooDev/Build-WX-Apps#readme",
+  "bugs": {
+    "url": "https://github.com/LeelooDev/Build-WX-Apps/issues"
+  },
+  "keywords": [
+    "wechat",
+    "miniprogram",
+    "uni-app",
+    "mcp",
+    "ai-agent",
+    "automation",
+    "devtools"
+  ]
+}

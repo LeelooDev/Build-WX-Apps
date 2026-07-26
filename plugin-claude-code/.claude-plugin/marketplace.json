@@ -1,0 +1,23 @@
+{
+  "$schema": "https://json.schemastore.org/claude-code-marketplace.json",
+  "name": "wx-agent-local",
+  "description": "本地 marketplace，承载 wx-agent 微信小程序开发插件。",
+  "owner": {
+    "name": "LeelooDev"
+  },
+  "plugins": [
+    {
+      "name": "wx-agent",
+      "source": "./",
+      "description": "微信小程序开发闭环：编译 / 运行 / 截图 / UI 驱动 / 日志 / 报错回溯源码。原生 + uni-app + Taro。",
+      "license": "MIT",
+      "keywords": [
+        "wechat",
+        "miniprogram",
+        "uni-app",
+        "automation",
+        "debugging"
+      ]
+    }
+  ]
+}

@@ -187,10 +187,19 @@ try {
   if (fs.existsSync(link) || fs.lstatSync(link, { throwIfNoEntry: false })) {
     fs.rmSync(link, { recursive: true, force: true })
   }
-  fs.symlinkSync(path.relative(linkDir, patched), link, 'dir')
+  if (process.platform === 'win32') {
+    // Windows 上目录 symlink 需要 SeCreateSymbolicLinkPrivilege（管理员或开启开发者模式），
+    // 普通用户会 EPERM。junction 不需要特权，但只接受绝对路径。
+    fs.symlinkSync(path.resolve(patched), link, 'junction')
+  } else {
+    fs.symlinkSync(path.relative(linkDir, patched), link, 'dir')
+  }
   console.log('[wx-agent] 已修复 @vue/component-compiler-utils 解析路径（recyclableRender 补丁）')
 } catch (err) {
   console.warn('[wx-agent] 修复 component-compiler-utils 失败：' + err.message)
+  if (process.platform === 'win32') {
+    console.warn('[wx-agent] Windows 下可改用复制：把 ' + patched + ' 整个拷到 ' + link)
+  }
 }
 `
 
@@ -203,6 +212,7 @@ try {
  * 顺便让手动 `npm run dev:mp-weixin` 和 `wxctl compile` 走完全相同的逻辑。
  */
 export const BUILD_SCRIPT = `import { spawn } from 'node:child_process'
+import fs from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -213,7 +223,16 @@ const prod = args.includes('--prod')
 
 const outDir = prod ? 'unpackage/dist/build/mp-weixin' : 'unpackage/dist/dev/mp-weixin'
 
-const child = spawn('npx', ['vue-cli-service', 'uni-build', ...(watch ? ['--watch'] : [])], {
+// 直接跑 vue-cli-service 的 JS 入口，不经过 npx。
+// 一是 Windows 上 npx 解析成 npx.cmd，Node ≥18.20 不带 shell spawn 批处理会抛 EINVAL；
+// 二是少一层进程，启动更快、信号传递更直接。
+const cli = path.join(root, 'node_modules/@vue/cli-service/bin/vue-cli-service.js')
+if (!fs.existsSync(cli)) {
+  console.error('[wx-agent] 找不到 @vue/cli-service，请先在项目根目录跑 npm install')
+  process.exit(1)
+}
+
+const child = spawn(process.execPath, [cli, 'uni-build', ...(watch ? ['--watch'] : [])], {
   cwd: root,
   stdio: 'inherit',
   env: {

@@ -29,17 +29,51 @@ function toDistRelative (loc) {
   return p.replace(/^\/+/, '')
 }
 
-/** 源码路径规整：uni-app:///pages/a.vue → pages/a.vue；webpack:////abs/path.vue?hash → 绝对路径 */
-function normalizeSource (source, projectRoot) {
+/** Windows 上 webpack 把绝对路径写成 `webpack:///C:/Users/...`（盘符直接跟在三斜杠后） */
+const WIN_ABS_RE = /^[a-zA-Z]:[/\\]/
+
+/**
+ * 源码路径规整：
+ *   uni-app:///pages/a.vue      → pages/a.vue
+ *   webpack:////abs/path.vue    → 相对项目根的路径（POSIX 绝对路径，四斜杠）
+ *   webpack:///C:/abs/path.vue  → 同上（Windows 绝对路径，三斜杠 + 盘符）
+ *   webpack:///./pages/a.vue    → pages/a.vue
+ *
+ * 分隔符统一成 `/`：这些值要拿去和 map 里的 source 比对、还要显示给用户，
+ * 混着 `\` 和 `/` 会让相同的文件看起来像两个。
+ */
+export function normalizeSource (source, projectRoot) {
   if (!source) return null
-  let s = source.split('?')[0]
-  if (s.startsWith('uni-app:///')) return s.slice('uni-app:///'.length)
-  if (s.startsWith('webpack:////')) {
-    const abs = '/' + s.slice('webpack:////'.length)
-    return projectRoot ? path.relative(projectRoot, abs) : abs
+  const s = source.split('?')[0]
+  if (s.startsWith('uni-app:///')) return toPosix(s.slice('uni-app:///'.length))
+
+  if (s.startsWith('webpack:////')) return relToRoot('/' + s.slice('webpack:////'.length), projectRoot)
+  if (s.startsWith('webpack:///')) {
+    const rest = s.slice('webpack:///'.length)
+    // Windows 的绝对路径在这里没有前导斜杠，不特判就会被当成相对路径拼到项目根下
+    if (WIN_ABS_RE.test(rest)) return relToRoot(rest, projectRoot)
+    return toPosix(rest.replace(/^\.\//, ''))
   }
-  if (s.startsWith('webpack:///')) return s.slice('webpack:///'.length).replace(/^\.\//, '')
-  return s
+  return toPosix(s)
+}
+
+/**
+ * 相对化时一律走 posix 语义，而不是 `path.relative`。
+ *
+ * 因为 sourcemap 的形态取决于**打包时**的平台，跟现在跑在哪无关 ——
+ * 在 Windows 上编的产物拿到 macOS 上分析是常见需求（CI 编译、同事之间传产物）。
+ * 用 `path.relative` 的话，macOS 上会把 `D:\work\proj` 当成一个没有分隔符的文件名，
+ * 算出 `../D:/work/proj/pages/a.vue` 这种结果。
+ */
+function relToRoot (abs, projectRoot) {
+  if (!projectRoot) return toPosix(abs)
+  return path.posix.relative(toPosix(projectRoot), toPosix(abs))
+}
+
+/** 统一成正斜杠，并把盘符大写 —— Windows 路径不区分大小写，`c:/x` 和 `C:/x` 得能对上 */
+function toPosix (p) {
+  const s = String(p).replace(/\\/g, '/')
+  return WIN_ABS_RE.test(s) ? s[0].toUpperCase() + s.slice(1) : s
 }
 
 /** 是否是我们真正关心的源码（排除运行时/依赖噪声） */

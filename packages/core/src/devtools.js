@@ -1,17 +1,51 @@
 import { execFile } from 'node:child_process'
 import net from 'node:net'
 import os from 'node:os'
+import path from 'node:path'
 import { promisify } from 'node:util'
 import { exists, sleep, waitUntil } from './util.js'
+import { IS_WIN, spawnSpec } from './platform.js'
 
 const execFileAsync = promisify(execFile)
 
+/**
+ * 开发者工具的安装位置。
+ *
+ * Windows 上比 macOS 麻烦得多：安装目录名换过（「微信web开发者工具」→「微信开发者工具」），
+ * 装到非系统盘也很常见，而且入口是 `cli.bat` 而不是可执行文件。所以除了枚举常见位置，
+ * 还支持用 `WX_DEVTOOLS_CLI` 环境变量或 `--cli-path` 直接指定。
+ */
+function winCandidates () {
+  const dirs = []
+  const bases = [
+    process.env['ProgramFiles(x86)'],
+    process.env.ProgramFiles,
+    process.env.LOCALAPPDATA && path.join(process.env.LOCALAPPDATA, 'Programs'),
+    'C:/Program Files (x86)',
+    'C:/Program Files',
+    'D:/Program Files (x86)',
+    'D:/Program Files',
+    'D:/',
+    'E:/'
+  ].filter(Boolean)
+
+  const names = ['微信web开发者工具', '微信开发者工具', 'wechatwebdevtools']
+  for (const base of bases) {
+    for (const name of names) {
+      dirs.push(path.join(base, 'Tencent', name), path.join(base, name))
+    }
+  }
+  return dirs.map((d) => path.join(d, 'cli.bat'))
+}
+
 const DEFAULT_CLI_PATHS = {
-  darwin: ['/Applications/wechatwebdevtools.app/Contents/MacOS/cli'],
-  win32: [
-    'C:/Program Files (x86)/Tencent/微信web开发者工具/cli.bat',
-    'C:/Program Files/Tencent/微信web开发者工具/cli.bat'
+  darwin: [
+    '/Applications/wechatwebdevtools.app/Contents/MacOS/cli',
+    path.join(os.homedir(), 'Applications/wechatwebdevtools.app/Contents/MacOS/cli')
   ],
+  get win32 () {
+    return winCandidates()
+  },
   linux: []
 }
 
@@ -41,8 +75,16 @@ export class DevTools {
     this.cliPath = cliPath
   }
 
-  /** 找开发者工具 cli 可执行文件 */
+  /**
+   * 找开发者工具 cli 可执行文件。
+   * 显式指定优先：Windows 上装在自定义盘符的情况太多，枚举不可能全覆盖。
+   */
   static findCli () {
+    const fromEnv = process.env.WX_DEVTOOLS_CLI
+    // 注意：即便这个路径不存在也要原样返回，**不能**静默回退到自动探测 ——
+    // 否则用户把路径写错时只会看到「找不到开发者工具」，永远想不到是自己那行配置的问题。
+    // 由 assertAvailable 负责把「你指定的路径不存在」这句话说清楚。
+    if (fromEnv) return fromEnv
     const candidates = DEFAULT_CLI_PATHS[os.platform()] ?? []
     return candidates.find((p) => exists(p)) ?? null
   }
@@ -52,21 +94,41 @@ export class DevTools {
   }
 
   assertAvailable () {
-    if (!this.available) {
+    if (this.available) return
+
+    if (this.cliPath) {
       throw new Error(
-        '找不到微信开发者工具 cli。macOS 默认在 /Applications/wechatwebdevtools.app/Contents/MacOS/cli；' +
-          '若装在别处，用 --cli-path 指定。'
+        `指定的开发者工具 cli 不存在：${this.cliPath}\n` +
+          '（来自 --cli-path 或 WX_DEVTOOLS_CLI）检查路径是否写对，注意 Windows 上入口是 cli.bat。'
       )
     }
+    const where = IS_WIN
+      ? 'Windows 默认在 C:\\Program Files (x86)\\Tencent\\微信web开发者工具\\cli.bat'
+      : 'macOS 默认在 /Applications/wechatwebdevtools.app/Contents/MacOS/cli'
+    throw new Error(
+      `找不到微信开发者工具 cli。${where}；\n` +
+        '若装在别处，用 --cli-path 指定，或设环境变量 WX_DEVTOOLS_CLI。'
+    )
   }
 
   /** 跑一条 cli 子命令 */
   async run (args, { timeout = 180000 } = {}) {
     this.assertAvailable()
+    // Windows 上入口是 cli.bat；Node 修掉 CVE-2024-27980 后不带 shell 直接跑批处理会 EINVAL。
+    // spawnSpec 走 cmd.exe /d /s /c 并自己加引号 —— 用 shell:true 的话项目路径里的
+    // & ( ) 会被 cmd 当命令分隔符。
+    let spec
     try {
-      const { stdout, stderr } = await execFileAsync(this.cliPath, args, {
+      spec = spawnSpec(this.cliPath, args)
+    } catch (err) {
+      return { ok: false, stdout: '', stderr: String(err.message), error: err }
+    }
+    try {
+      const { stdout, stderr } = await execFileAsync(spec.file, spec.args, {
         timeout,
-        maxBuffer: 16 * 1024 * 1024
+        maxBuffer: 16 * 1024 * 1024,
+        windowsHide: true,
+        ...spec.opts
       })
       return { ok: true, stdout: stdout ?? '', stderr: stderr ?? '' }
     } catch (err) {
@@ -151,19 +213,37 @@ export class DevTools {
     return { port, output: r.stdout }
   }
 
-  /** 开发者工具应用包路径（从 cli 路径反推） */
+  /** 开发者工具应用包路径（macOS 的 .app，从 cli 路径反推） */
   get appPath () {
     if (!this.cliPath) return null
     const m = this.cliPath.match(/^(.*\.app)\//)
     return m ? m[1] : null
   }
 
+  /** Windows 上 GUI 的 exe（和 cli.bat 同目录） */
+  get winExePath () {
+    if (!IS_WIN || !this.cliPath) return null
+    const dir = path.dirname(this.cliPath)
+    const names = ['微信开发者工具.exe', '微信web开发者工具.exe', 'wechatwebdevtools.exe']
+    return names.map((n) => path.join(dir, n)).find((p) => exists(p)) ?? null
+  }
+
   /** 拉起 GUI 并等到进程就绪 */
   async launchGui ({ timeout = 90000 } = {}) {
     if (process.platform === 'darwin' && this.appPath) {
       await execFileAsync('open', ['-a', this.appPath]).catch(() => {})
+    } else if (IS_WIN && this.winExePath) {
+      // 直接起 exe 比让 cli.bat 顺带拉起更可控。不能等它退出（GUI 是长驻进程），
+      // 所以 detached + unref，否则 execFile 会一直挂到超时。
+      const { spawn } = await import('node:child_process')
+      const child = spawn(this.winExePath, [], {
+        detached: true,
+        stdio: 'ignore',
+        windowsHide: false // GUI 就是要给人看的
+      })
+      child.unref()
     } else {
-      // 其他平台交给 cli 自己拉起（它在 IDE 没运行时会启动）
+      // 其他情况交给 cli 自己拉起（它在 IDE 没运行时会启动）
       await this.run(['islogin'], { timeout: 30000 }).catch(() => {})
     }
     await waitUntil(() => this.isRunning(), {
@@ -178,9 +258,19 @@ export class DevTools {
   /** 进程是否在跑（比 islogin 快且不受登录态影响） */
   async isRunning () {
     try {
-      if (process.platform === 'win32') {
-        const { stdout } = await execFileAsync('tasklist', [], { timeout: 10000 })
-        return /wechatwebdevtools/i.test(stdout)
+      if (IS_WIN) {
+        // 用 latin1 而不是 utf8：中文 Windows 的 tasklist 输出是 GBK/CP936，
+        // 按 UTF-8 解码会把中文进程名变成乱码，正则永远匹配不上。
+        // latin1 是字节到码点的一一映射，不会丢字节，ASCII 部分照常可匹配。
+        // 代价：进程名如果**只有**中文就检测不到 —— 那种情况下最多多拉起一次 GUI，
+        // 而重复启动只会聚焦已有窗口，不会开新的，所以可以接受。
+        const { stdout } = await execFileAsync('tasklist', ['/FO', 'CSV', '/NH'], {
+          timeout: 15000,
+          maxBuffer: 8 * 1024 * 1024,
+          windowsHide: true,
+          encoding: 'latin1'
+        })
+        return /wechatwebdevtools|wechatdevtools/i.test(stdout)
       }
       await execFileAsync('pgrep', ['-f', 'wechatwebdevtools'], { timeout: 10000 })
       return true

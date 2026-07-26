@@ -158,20 +158,40 @@ export class Capture {
     if (!frames?.length) return null
     const dir = path.dirname(frames[0])
     const target = out ?? path.join(this.outDir, `clip-${Date.now()}.gif`)
+
+    // 用 concat demuxer 而不是 `-pattern_type glob`：
+    //   1. glob 依赖 POSIX glob()，Windows 上的官方 ffmpeg 构建根本没编进去，直接报错；
+    //   2. 连拍时单帧失败会让序号断档（001、003…），`%03d` 模式一遇到缺号就停在那儿；
+    //   3. 列表里能顺带写死每帧时长，比靠 -framerate 猜更准。
+    const list = path.join(dir, 'frames.txt')
+    const dur = (1 / fps).toFixed(4)
+    // concat demuxer 会忽略最后一条 file 的 duration，末帧重复一次才能保住它的显示时长
+    const lines = frames
+      .map((f) => `file '${ffconcatEscape(path.basename(f))}'\nduration ${dur}`)
+      .concat(`file '${ffconcatEscape(path.basename(frames[frames.length - 1]))}'`)
+
     try {
+      fs.writeFileSync(list, lines.join('\n') + '\n')
       await execFileAsync('ffmpeg', [
         '-y',
-        '-framerate', String(fps),
-        '-pattern_type', 'glob',
-        '-i', path.join(dir, '*.png'),
+        '-f', 'concat',
+        // 列表里用的是相对文件名（配合 -i 所在目录），不涉及跨目录引用
+        '-safe', '0',
+        '-i', list,
         '-vf', `scale=${width}:-1:flags=lanczos,split[a][b];[a]palettegen[p];[b][p]paletteuse`,
         target
-      ], { timeout: 120000 })
+      ], { timeout: 120000, cwd: dir, windowsHide: true })
       if (!fs.existsSync(target)) return null
       this._accrue(safeSize(target))
       return target
     } catch {
       return null
+    } finally {
+      try {
+        fs.rmSync(list, { force: true })
+      } catch {
+        /* 清单文件残留无所谓，会被产物回收带走 */
+      }
     }
   }
 
@@ -183,6 +203,14 @@ export class Capture {
       /* 清不掉就算了 */
     }
   }
+}
+
+/**
+ * ffconcat 清单里 file 行的转义。文件名已经过 safeFileName，不会有引号，
+ * 但帧目录名来自 prefix，还是按规矩转一道：反斜杠转义单引号。
+ */
+function ffconcatEscape (name) {
+  return String(name).replace(/'/g, "'\\''")
 }
 
 function safeSize (file) {

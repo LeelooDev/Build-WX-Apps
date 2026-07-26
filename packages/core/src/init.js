@@ -3,6 +3,7 @@ import path from 'node:path'
 import { spawn } from 'node:child_process'
 import { exists, readJsonLoose, writeJson } from './util.js'
 import { DevTools } from './devtools.js'
+import { IS_WIN, findNpmCli, spawnSpec } from './platform.js'
 import {
   BABEL_CONFIG,
   BUILD_SCRIPT,
@@ -199,6 +200,39 @@ export async function doctor (info) {
   const nodeMajor = Number(process.versions.node.split('.')[0])
   add('Node', nodeMajor >= 18, `v${process.versions.node}`, nodeMajor >= 18 ? null : '需要 Node 18.17+')
 
+  if (IS_WIN) {
+    // npm 的 JS 入口找不到时只能退回 npm.cmd，那条路要经 cmd.exe，更容易出岔子
+    const npmCli = findNpmCli()
+    add(
+      'npm 入口',
+      Boolean(npmCli),
+      npmCli ?? '未找到 npm-cli.js，将退回 npm.cmd',
+      npmCli ? null : '通常说明 Node 装得不完整，重装 Node 或用 nvm-windows 换个版本'
+    )
+
+    // 路径里的 % 会在 cmd.exe 传参时被当环境变量展开，没有可靠转义。
+    // 不提前拦的话，用户会在 `wxctl run` 时收到一句莫名其妙的「找不到项目」。
+    const pctPath = [info.root, new DevTools().cliPath].find((p) => p && p.includes('%'))
+    add(
+      '路径可传给 cmd.exe',
+      !pctPath,
+      pctPath ? `含 % 的路径：${pctPath}` : '正常',
+      pctPath ? '把项目（或开发者工具）移到路径中不含 % 的目录 —— cmd.exe 会把 %xxx% 当环境变量展开' : null
+    )
+
+    // 长路径：Win32 API 默认上限 260 字符，node_modules 深目录很容易撞上
+    const longish = info.root.length > 150
+    add(
+      '路径长度',
+      !longish,
+      `${info.root.length} 字符`,
+      longish
+        ? '项目路径偏深，npm install 可能因 260 字符上限失败。' +
+          '要么把项目挪到靠近盘符根的位置，要么开启长路径支持（组策略或注册表 LongPathsEnabled=1）'
+        : null
+    )
+  }
+
   // 开发者工具
   const dt = new DevTools()
   add(
@@ -265,7 +299,20 @@ function runNode (args, cwd) {
 
 function runCmd (cmd, args, cwd, timeout = 900000) {
   return new Promise((resolve) => {
-    const p = spawn(cmd, args, { cwd, stdio: ['ignore', 'pipe', 'pipe'] })
+    // Windows 上 `npm` 解析成 npm.cmd，直接 spawn 会 EINVAL（Node ≥18.20）。
+    // spawnSpec 改走 npm 的 JS 入口，顺带保证用的是当前这个 node。
+    let spec
+    try {
+      spec = spawnSpec(cmd, args, { root: cwd })
+    } catch (err) {
+      return resolve({ ok: false, message: String(err.message), output: '' })
+    }
+    const p = spawn(spec.file, spec.args, {
+      cwd,
+      stdio: ['ignore', 'pipe', 'pipe'],
+      windowsHide: true,
+      ...spec.opts
+    })
     let buf = ''
     const timer = setTimeout(() => {
       p.kill('SIGTERM')

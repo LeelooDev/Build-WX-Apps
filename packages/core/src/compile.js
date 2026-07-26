@@ -2,6 +2,7 @@ import { spawn } from 'node:child_process'
 import fs from 'node:fs'
 import path from 'node:path'
 import { exists, waitUntil } from './util.js'
+import { spawnSpec } from './platform.js'
 
 /** 编译成功/失败的输出特征（uni-app 用的是 vue-cli，Taro 用 webpack，特征通用） */
 const DONE_RE = /Build complete|Compiled successfully|编译成功|build finished/i
@@ -130,10 +131,22 @@ class UniCliCompiler extends BaseCompiler {
 
   _spawn (cmd, args, { watch, timeout, onOutput }) {
     return new Promise((resolve) => {
-      const proc = spawn(cmd, args, {
+      // 关键：不能直接 spawn('npx', ...)。Windows 上那是 npx.cmd，
+      // Node 修掉 CVE-2024-27980 之后不带 shell 跑批处理文件会抛 EINVAL。
+      // spawnSpec 会把它翻译成「当前 node 直接跑本地 vue-cli-service 入口」——
+      // 跨平台之外还少一层进程。
+      let spec
+      try {
+        spec = spawnSpec(cmd, args, { root: this.info.root })
+      } catch (err) {
+        return resolve({ ok: false, message: String(err.message), output: '' })
+      }
+      const proc = spawn(spec.file, spec.args, {
         cwd: this.info.root,
         env: this.env(),
-        stdio: ['ignore', 'pipe', 'pipe']
+        stdio: ['ignore', 'pipe', 'pipe'],
+        windowsHide: true,
+        ...spec.opts
       })
       this.proc = proc
 
@@ -218,10 +231,14 @@ class NpmScriptCompiler extends BaseCompiler {
 
   async build ({ timeout = 600000, onOutput = null } = {}) {
     return new Promise((resolve) => {
-      const proc = spawn('npm', ['run', this.script], {
+      // 同上：Windows 上 `npm` 是 npm.cmd，spawnSpec 会改走 npm 的 JS 入口
+      const spec = spawnSpec('npm', ['run', this.script], { root: this.info.root })
+      const proc = spawn(spec.file, spec.args, {
         cwd: this.info.root,
         env: process.env,
-        stdio: ['ignore', 'pipe', 'pipe']
+        stdio: ['ignore', 'pipe', 'pipe'],
+        windowsHide: true,
+        ...spec.opts
       })
       this.proc = proc
       let buf = ''

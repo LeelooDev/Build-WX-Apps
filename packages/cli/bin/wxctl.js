@@ -80,6 +80,8 @@ const HELP = `wxctl —— 微信小程序开发的命令行控制器
   --dir <路径>    指定工程目录（默认当前目录，会自动向下寻找小程序工程）
   --port <端口>   自动化端口（默认 9420）
   --json          输出原始 JSON，便于脚本/AI 解析
+  --cli-path <路径>  微信开发者工具 cli 的位置（自动探测失败时用；
+                     Windows 上是 cli.bat）。等价于环境变量 WX_DEVTOOLS_CLI
 `
 
 function parseArgs (argv) {
@@ -140,6 +142,13 @@ async function main () {
   const { flags, positional } = parseArgs(rest)
   const port = Number(flags.port ?? 9420)
   const json = Boolean(flags.json)
+
+  // --cli-path 走环境变量而不是逐层传参：daemon 是 spawn 出来的子进程，会继承环境，
+  // 这样一处设置就同时覆盖直连模式和 daemon 模式（否则两条路径要各改一遍，必漏）。
+  // Windows 上开发者工具的安装位置五花八门，这是唯一的逃生舱，不能形同虚设。
+  if (typeof flags['cli-path'] === 'string') {
+    process.env.WX_DEVTOOLS_CLI = path.resolve(flags['cli-path'])
+  }
   const out = (kind, data) => console.log(json ? JSON.stringify(data, null, 2) : render(kind, data))
 
   switch (cmd) {

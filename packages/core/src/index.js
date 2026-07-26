@@ -7,7 +7,19 @@ export { LogCollector } from './logs.js'
 export { UI } from './ui.js'
 export { Capture } from './capture.js'
 export { SourceMapper, mapStackOnce } from './sourcemap.js'
-export { stateDir, openAppendNoFollow, safeFileName, isInside } from './paths.js'
+export { stateDir, openAppendNoFollow, safeFileName, isInside, IS_WIN, HAS_POSIX_PERMS } from './paths.js'
+export {
+  IS_MAC,
+  channelFor,
+  channelIsPath,
+  clearChannel,
+  findNpmCli,
+  linkDir,
+  localBinScript,
+  platformNote,
+  quoteCmdArg,
+  spawnSpec
+} from './platform.js'
 export { analyzeSize, renderSizeReport, fmtBytes, LIMITS } from './size.js'
 export { Perf, analyzeSetData, renderSetDataReport } from './perf.js'
 export {

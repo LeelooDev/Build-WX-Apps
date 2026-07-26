@@ -79,6 +79,8 @@ plugin-claude-code/     Claude Code 插件（/wxgo 入口 + 4 个 skill）
 3. Node ≥ 18.17
 4. 可选：`ffmpeg`（连拍合成 GIF 用）
 
+支持 **macOS / Windows / Linux**。Windows 用户请先看 [Windows 说明](#windows)，那边有几处配置写法不同。
+
 ### 本地开发（尚未发布到 npm 时）
 
 先把三个包 link 到全局，这样 `npx wx-agent-mcp` 和 `wxctl` 都能直接用：
@@ -136,6 +138,48 @@ claude plugin install wx-agent@wx-agent-local
 `WX_AGENT_PROJECT` 可省略（默认取工作目录），每个工具也都能单独传 `projectDir`。
 
 另见 [`docs/AGENTS.md`](docs/AGENTS.md)，可直接放进项目给 Codex 等工具当上下文。
+
+<a id="windows"></a>
+### Windows
+
+功能一致，但有三处配置不一样。
+
+**1. MCP 配置要经 `cmd`。** Windows 上 `npx` 实际是 `npx.cmd`，而多数 MCP 客户端直接 spawn 它会失败（Node 修掉 CVE-2024-27980 之后，不带 shell 执行批处理文件会抛 `EINVAL`）：
+
+```json
+{
+  "mcpServers": {
+    "wx-agent": {
+      "command": "cmd",
+      "args": ["/c", "npx", "-y", "wx-agent-mcp@latest"],
+      "env": { "WX_AGENT_PROJECT": "D:\\你的小程序工程" }
+    }
+  }
+}
+```
+
+**2. 开发者工具的位置。** 默认会去这些地方找 `cli.bat`（`Program Files` / `Program Files (x86)` / `%LOCALAPPDATA%\Programs` 下的 `Tencent\微信web开发者工具`、`Tencent\微信开发者工具`，以及 D、E 盘的同名目录）。装在别处就显式指定：
+
+```powershell
+setx WX_DEVTOOLS_CLI "D:\Tools\微信web开发者工具\cli.bat"
+```
+
+也可以每次用 `wxctl --cli-path "D:\...\cli.bat"`。
+
+**3. 项目路径不能含 `%`。** 传参要经 `cmd.exe`，而它会把 `%xxx%` 当环境变量展开，没有可靠的转义写法。所以 `D:\100%完成\proj` 这类路径会被直接拒绝并报明确错误，而不是让参数被悄悄改写。`wxctl doctor` 会提前检查这一点，顺带检查路径长度（Win32 的 260 字符上限会让 `npm install` 在深目录里失败）。
+
+平台差异都收在 [`packages/core/src/platform.js`](packages/core/src/platform.js) 一个文件里：
+
+| 差异 | POSIX | Windows |
+|---|---|---|
+| CLI ↔ daemon 通道 | Unix socket，`~/.wx-agent/run/`（0700） | named pipe，名字带 16 字节随机串（见下） |
+| 跑 `npm` / `npx` | 直接执行 | 走 npm 的 JS 入口，绕开 `.cmd` |
+| 跑开发者工具 cli | 直接执行 | `cmd.exe /d /s /c` + 自行加引号 |
+| 目录链接（`init` 的补丁） | symlink | junction（symlink 需管理员权限） |
+| 访问控制 | 目录权限位 0700 | `%USERPROFILE%` 继承的 NTFS ACL |
+| GIF 合成 | ffmpeg concat demuxer | 同上（不用 `-pattern_type glob`，Windows 构建没编进去） |
+
+> **为什么 Windows 的 pipe 名要带随机串**：控制通道等同于一个无认证的控制接口 —— 连上就能让 daemon 在你的小程序里执行任意 JS。POSIX 下靠 0700 目录挡住其他本地用户，而 `\\.\pipe\` 是**全机器共享且没有权限位**的命名空间。所以 pipe 名用 16 字节随机数，真名存在 `%USERPROFILE%\.wx-agent\run\<key>.pipe`（受 NTFS ACL 保护）—— 猜不到名字就连不上。
 
 ### 只用命令行
 
@@ -260,8 +304,17 @@ wxctl clean --auto  # 只回收超出上限的部分
   不放 `os.tmpdir()`。daemon 的 socket 等同于一个无认证的控制通道——连上就能让它在小程序里
   执行 JS、往磁盘写截图。在 Linux 上 tmpdir 是全局可写的 `/tmp`，放那里等于对所有本地用户开放。
   靠目录权限把访问者限制为你本人。
+  **Windows** 没有 Unix socket，改用 named pipe；而 `\\.\pipe\` 是全机器共享且无权限位的命名空间，
+  所以 pipe 名带 16 字节随机串，真名存在 `%USERPROFILE%\.wx-agent\run\` 下受 NTFS ACL 保护 ——
+  隔离手段从「目录权限」换成了「名字即凭据」。
 - **日志以 `O_NOFOLLOW` 打开**，路径若被换成符号链接则直接报错，不会顺着写进它指向的文件。
+  Windows 没有这个 flag，退回 `lstat` 预检——这**不等价**（存在 TOCTOU 窗口），
+  但能往 `%USERPROFILE%` 里放重解析点的攻击者已经拿到了你的写权限，此时他有远比这更直接的手段。
 - **文件名会消毒，相对路径锁在产物目录内**，`../../` 穿不出去。
+  Windows 上额外规避保留设备名（`CON`、`PRN`、`COM1`…）和结尾的点/空格，
+  并按大小写不敏感来判断目录边界。
+- **传给 `cmd.exe` 的参数逐个加引号**，而不是用 `shell: true` ——
+  否则项目路径里的 `&`、`(`、`|` 会被当成命令分隔符。含 `%` 的路径直接拒绝（无可靠转义）。
 - **MCP 层的落盘路径受限**：`wx_screenshot` 的 `savePath` 等参数由模型填写，而模型读的是
   小程序页面内容（可能含诱导性文字），因此只允许写到项目目录或产物目录内。
   CLI 侧不做此限制——那是你本人在敲命令。

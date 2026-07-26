@@ -3,6 +3,7 @@ import path from 'node:path'
 import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
 import { sleep } from './util.js'
+import { isInside, safeFileName } from './paths.js'
 import { ARTIFACT_ROOT, DEFAULT_MAX_BYTES, dirFor, stats, sweep } from './artifacts.js'
 
 const execFileAsync = promisify(execFile)
@@ -56,8 +57,21 @@ export class Capture {
     return this.session.mp
   }
 
+  /**
+   * 解析产物落盘路径。
+   *
+   * - **绝对路径**：调用方显式要求的"另存为"，按原样使用。这是功能本身
+   *   （`wxctl screenshot -o ~/desktop/a.png`），不是漏洞。
+   *   面向模型的 MCP 层会另外把它约束在项目/产物目录内。
+   * - **相对路径**：一律锁在产物目录内，`../../` 穿不出去。
+   */
   _path (name) {
-    return path.isAbsolute(name) ? name : path.join(this.outDir, name)
+    if (path.isAbsolute(name)) return name
+    const target = path.resolve(this.outDir, name)
+    if (!isInside(this.outDir, target)) {
+      throw new Error(`产物路径越界：${name} 解析后落在 ${this.outDir} 之外`)
+    }
+    return target
   }
 
   /**
@@ -66,7 +80,8 @@ export class Capture {
    * @returns {Promise<{path:string, bytes:number}>}
    */
   async screenshot ({ path: target = null, label = 'shot' } = {}) {
-    const file = this._path(target ?? `${label}-${Date.now()}.png`)
+    // label 会拼进文件名，必须消毒 —— 否则 "../../x" 这样的值能拼出目录穿越
+    const file = this._path(target ?? `${safeFileName(label)}-${Date.now()}.png`)
     fs.mkdirSync(path.dirname(file), { recursive: true })
     await this.mp.screenshot({ path: file })
     const bytes = fs.existsSync(file) ? fs.statSync(file).size : 0
@@ -82,7 +97,7 @@ export class Capture {
    * @returns {Promise<string[]>} 帧文件路径
    */
   async burst ({ interval = 500, count = 10, prefix = 'frame', onFrame = null } = {}) {
-    const dir = path.join(this.outDir, `${prefix}-${Date.now()}`)
+    const dir = path.join(this.outDir, `${safeFileName(prefix, 'frames')}-${Date.now()}`)
     fs.mkdirSync(dir, { recursive: true })
     const frames = []
     for (let i = 0; i < count; i++) {
@@ -106,7 +121,7 @@ export class Capture {
    * @param {Function} action 期间要跑的操作
    */
   async recordWhile (action, { interval = 400, maxFrames = 40, prefix = 'rec' } = {}) {
-    const dir = path.join(this.outDir, `${prefix}-${Date.now()}`)
+    const dir = path.join(this.outDir, `${safeFileName(prefix, 'frames')}-${Date.now()}`)
     fs.mkdirSync(dir, { recursive: true })
     const frames = []
     let stop = false

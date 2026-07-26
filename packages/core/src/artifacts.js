@@ -2,6 +2,7 @@ import crypto from 'node:crypto'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
+import { stateDir } from './paths.js'
 
 /**
  * 截图 / 帧序列 / GIF 的产物管理。
@@ -14,7 +15,12 @@ import path from 'node:path'
  * 否则同时开几个项目，每个各占上限，总量照样失控。
  */
 
-export const ARTIFACT_ROOT = path.join(os.tmpdir(), 'wx-agent-artifacts')
+/**
+ * 产物根目录，落在用户私有的 ~/.wx-agent/ 下（0700）。
+ * 早期版本放在 os.tmpdir()，但那在 Linux 上是全局可写的 /tmp —— 别的本地用户
+ * 可以预置同名 symlink 劫持写入。旧位置的残留由 sweepLegacyDirs 负责清理。
+ */
+export const ARTIFACT_ROOT = stateDir('artifacts')
 
 /** 默认容量上限，可用 WX_AGENT_MAX_ARTIFACT_MB 覆盖 */
 export const DEFAULT_MAX_BYTES = Number(process.env.WX_AGENT_MAX_ARTIFACT_MB || 100) * 1024 * 1024
@@ -108,8 +114,10 @@ function sweepStaleDirs (root, now) {
 }
 
 /**
- * 清掉早期版本遗留的产物目录（当时是直接在 tmpdir 下建 wx-agent-<pid>）。
- * 那些目录不在新的根目录里，不清的话会一直留在磁盘上。
+ * 清掉早期版本遗留在 tmpdir 里的产物目录：
+ *   - `wx-agent-<pid>`      最早的实现，每个进程一个目录
+ *   - `wx-agent-artifacts`  上一版的产物根目录（后来因安全原因移到 ~/.wx-agent/）
+ * 不清的话它们会一直占着磁盘。
  */
 export function sweepLegacyDirs (now = Date.now()) {
   const tmp = os.tmpdir()
@@ -122,12 +130,19 @@ export function sweepLegacyDirs (now = Date.now()) {
     return { freed, removed }
   }
   for (const e of entries) {
-    if (!e.isDirectory() || !/^wx-agent-\d+$/.test(e.name)) continue
+    const isDir = e.isDirectory()
+    // 旧产物目录：wx-agent-<pid>/ 和 wx-agent-artifacts/
+    const legacyDir = isDir && (/^wx-agent-\d+$/.test(e.name) || e.name === 'wx-agent-artifacts')
+    // 旧的控制 socket 与 daemon 日志：wx-agent-<hash>.sock / .log
+    const legacyFile = !isDir && /^wx-agent-[\da-f]+\.(sock|log)$/.test(e.name)
+    if (!legacyDir && !legacyFile) continue
+
     const abs = path.join(tmp, e.name)
     try {
-      // 正在被某个活着的进程用的目录别动
-      if (now - fs.statSync(abs).mtimeMs < 60 * 60 * 1000) continue
-      freed += walkFiles(abs).reduce((s, f) => s + f.bytes, 0)
+      // 可能还被某个活着的进程用着，隔一小时再动
+      if (now - fs.lstatSync(abs).mtimeMs < 60 * 60 * 1000) continue
+      if (legacyDir) freed += walkFiles(abs).reduce((s, f) => s + f.bytes, 0)
+      else freed += fs.lstatSync(abs).size
       fs.rmSync(abs, { recursive: true, force: true })
       removed++
     } catch {

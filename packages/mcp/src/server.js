@@ -1,8 +1,11 @@
 import fs from 'node:fs'
+import path from 'node:path'
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js'
 import { z } from 'zod'
 import {
+  ARTIFACT_ROOT,
   DEFAULT_MAX_BYTES,
+  isInside,
   WxAgent,
   analyzeSetData,
   detectProject,
@@ -55,6 +58,25 @@ async function connectedAgent (projectDir) {
 
 const text = (s) => ({ content: [{ type: 'text', text: String(s) }] })
 const fail = (s) => ({ content: [{ type: 'text', text: String(s) }], isError: true })
+
+/**
+ * 校验模型给的落盘路径。
+ *
+ * 这些参数由模型填写，而模型读的是小程序页面内容 —— 页面里可能藏着诱导性文字。
+ * 所以写入位置只允许落在「本项目目录」或「产物目录」内，不能写到 ~/.ssh、
+ * shell 配置这类地方去。CLI 侧不做这个限制：那是用户本人在敲命令。
+ */
+function checkWritePath (agent, target) {
+  if (!target) return null
+  const abs = path.resolve(target)
+  const allowed = [agent.info.root, ARTIFACT_ROOT]
+  if (allowed.some((root) => isInside(root, abs))) return abs
+  return {
+    error:
+      `拒绝写入 ${abs}：只允许写到项目目录（${agent.info.root}）或产物目录内。\n` +
+      '如果确实要存到别处，请由用户自己执行 `wxctl screenshot -o <路径>`。'
+  }
+}
 
 const dirArg = { projectDir: z.string().optional().describe('小程序工程目录；省略则用服务启动时的目录。会自动向下寻找真正的工程根') }
 
@@ -195,7 +217,9 @@ export function createServer () {
     },
     async ({ projectDir, savePath }) => {
       const agent = await connectedAgent(projectDir)
-      const shot = await agent.screenshot({ path: savePath })
+      const checked = checkWritePath(agent, savePath)
+      if (checked?.error) return fail(checked.error)
+      const shot = await agent.screenshot({ path: checked })
       const data = fs.readFileSync(shot.path).toString('base64')
       return {
         content: [
@@ -586,7 +610,9 @@ export function createServer () {
       const agent = agentFor(projectDir)
       const build = await agent.compiler.ensureBuilt()
       if (!build.ok) return fail(`编译失败，无法预览：${build.message}`)
-      const out = qrOutput || `${agent.capture?.outDir ?? '/tmp'}/wx-preview-qr.png`
+      const checked = checkWritePath(agent, qrOutput)
+      if (checked?.error) return fail(checked.error)
+      const out = checked || path.join(ARTIFACT_ROOT, 'wx-preview-qr.png')
       const r = await agent.devtools.preview(agent.info.distDir, { qrOutput: out })
       if (!r.ok) return fail(`生成预览失败：\n${r.stdout}\n${r.stderr}`)
       return text(`✅ 预览二维码已生成：${out}\n${r.stdout}`)

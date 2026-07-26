@@ -1,10 +1,10 @@
 import crypto from 'node:crypto'
 import fs from 'node:fs'
 import net from 'node:net'
-import os from 'node:os'
 import path from 'node:path'
 import { spawn } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
+import { openAppendNoFollow, stateDir } from 'wx-agent-core'
 
 /**
  * CLI ↔ daemon 的本地通信。
@@ -12,18 +12,25 @@ import { fileURLToPath } from 'node:url'
  * 为什么要 daemon：console 日志只在 automator 连接期间才会推送过来。
  * 如果每条 wxctl 命令都各自连一次、断一次，那么"点一下按钮然后看日志"永远看不到东西 ——
  * 日志产生在两次连接之间。所以让一个常驻进程持有连接和日志缓冲，CLI 只是它的瘦客户端。
+ *
+ * 安全：**socket 和日志都放在 ~/.wx-agent/run/（0700），不能放 os.tmpdir()**。
+ * 这个 socket 等同于一个无认证的控制通道 —— 连上就能让 daemon 在小程序里执行任意 JS、
+ * 往任意路径写截图。在 Linux 上 tmpdir 是全局可写的 /tmp，任何本地用户都能连，
+ * 也能预置同名 symlink 劫持日志写入。靠目录权限把访问者限制为当前用户本人。
  */
 
 const IDLE_TIMEOUT_MS = 30 * 60 * 1000
 
+function runtimeKey (projectDir) {
+  return crypto.createHash('sha1').update(path.resolve(projectDir)).digest('hex').slice(0, 10)
+}
+
 export function socketPathFor (projectDir) {
-  const hash = crypto.createHash('sha1').update(path.resolve(projectDir)).digest('hex').slice(0, 10)
-  return path.join(os.tmpdir(), `wx-agent-${hash}.sock`)
+  return path.join(stateDir('run'), `${runtimeKey(projectDir)}.sock`)
 }
 
 export function logPathFor (projectDir) {
-  const hash = crypto.createHash('sha1').update(path.resolve(projectDir)).digest('hex').slice(0, 10)
-  return path.join(os.tmpdir(), `wx-agent-${hash}.log`)
+  return path.join(stateDir('run'), `${runtimeKey(projectDir)}.log`)
 }
 
 /** 发一条请求；daemon 不在就返回 null（由调用方决定是否拉起） */
@@ -71,7 +78,8 @@ export async function ensureDaemon (projectDir, { port = 9420 } = {}) {
   if (ping?.ok) return { sockPath, started: false }
 
   const entry = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', 'bin', 'wxctl.js')
-  const out = fs.openSync(logPathFor(projectDir), 'a')
+  // O_NOFOLLOW：日志路径若被换成 symlink，宁可报错也不能顺着写到别的文件里去
+  const out = openAppendNoFollow(logPathFor(projectDir))
   const child = spawn(process.execPath, [entry, '__daemon', projectDir, String(port), sockPath], {
     detached: true,
     stdio: ['ignore', out, out]
@@ -128,7 +136,15 @@ export function serve (sockPath, handler) {
     sock.on('error', () => {})
   })
 
-  server.listen(sockPath, () => resetIdle(server))
+  server.listen(sockPath, () => {
+    // 目录已是 0700，socket 再收一次权限做纵深防御
+    try {
+      fs.chmodSync(sockPath, 0o600)
+    } catch {
+      /* 某些平台上 socket 不支持 chmod，忽略 */
+    }
+    resetIdle(server)
+  })
 
   const shutdown = () => {
     try {

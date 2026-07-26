@@ -7,6 +7,7 @@ export { LogCollector } from './logs.js'
 export { UI } from './ui.js'
 export { Capture } from './capture.js'
 export { SourceMapper, mapStackOnce } from './sourcemap.js'
+export { stateDir, openAppendNoFollow, safeFileName, isInside } from './paths.js'
 export { analyzeSize, renderSizeReport, fmtBytes, LIMITS } from './size.js'
 export { Perf, analyzeSetData, renderSetDataReport } from './perf.js'
 export {

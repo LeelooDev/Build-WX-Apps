@@ -3,7 +3,7 @@ import { describe, it } from 'node:test'
 import { interactiveList, outline, parseEventOpts, parseWxml, selectorFor } from '../src/wxml.js'
 
 /**
- * 这些样本取自微信开发者工具对 uni-app 产物的真实 wxml() 返回，
+ * 这些样本是微信开发者工具对 uni-app 产物的真实 wxml() 返回形态，
  * 包括它那个「class 会重复一遍」的怪行为 —— 不要"修正"成看起来更合理的样子。
  */
 const FORM_WXML = `<view class="page page data-v-1a2b3c4d data-v-1a2b3c4d"><view class="form form data-v-1a2b3c4d data-v-1a2b3c4d"><input class="input-field input-field data-v-1a2b3c4d" data-event-opts="input,__set_model,,account,$event," placeholder="账号" type="text"/><input class="input-field input-field data-v-1a2b3c4d" data-event-opts="input,__set_model,,pwd,$event," placeholder="密码" type="password"/><button class="submit-btn submit-btn data-v-1a2b3c4d" data-event-opts="tap,onSubmit,$event" role="button" aria-disabled="false">提交</button></view></view>`

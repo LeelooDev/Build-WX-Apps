@@ -16,9 +16,9 @@ description: 驱动微信小程序界面——找元素、点击、输入、走�
 清单长这样，信息已经足够决定点哪里：
 
 ```
-.input-field[0]   input   placeholder="账号"        → data.account
-.input-field[1]   input   placeholder="密码" type=password → data.pwd
-.submit-btn     button  "登录"                          → tap:onSubmit()
+.input-field[0]  input   placeholder="账号"                → data.account
+.input-field[1]  input   placeholder="密码" type=password  → data.pwd
+.submit-btn      button  "提交"                            → tap:onSubmit()
 .wechat-alt      view    "微信快捷登录"                    → tap:handleWechatLogin()
 ```
 

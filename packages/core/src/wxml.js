@@ -63,8 +63,8 @@ function meaningfulClasses (cls) {
  * 解析 uni-app 编译出的 data-event-opts —— 这是快照里信息密度最高的东西。
  *
  * 形如：
- *   "input,__set_model,,account,$event,"   → input 事件，双向绑定到 data.account
- *   "change,onToggle,$event"   → change 事件，调用 onToggle
+ *   "input,__set_model,,account,$event,"  → input 事件，双向绑定到 data.account
+ *   "change,onToggle,$event"             → change 事件，调用 onToggle
  *   "tap,onSubmit,$event"                → 点击调用 onSubmit
  *
  * 有了它，AI 不用猜"哪个输入框是密码"，也不用猜"点这个按钮会发生什么"。

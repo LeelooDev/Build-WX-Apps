@@ -10,7 +10,8 @@
 </p>
 
 <p align="center">
-  <a href="#快速开始">快速开始</a> ·
+  <a href="#安装">安装</a> ·
+  <a href="#接入">接入 Claude / Codex / Gemini</a> ·
   <a href="#一个真实例子">效果</a> ·
   <a href="#hbuilderx-版-uni-appwxctl-init-到底做了什么">uni-app 的 9 个坑</a> ·
   <a href="#能力一览">能力一览</a>
@@ -41,7 +42,7 @@ iOS 开发有 [XcodeBuildMCP](https://github.com/cameroncooke/XcodeBuildMCP)，A
 | 看不到界面，改完不知道对不对 | `wx_screenshot` 直接返回画面 |
 | 不知道页面上有什么、该点哪里 | `wx_snapshot` 给出结构 + 可交互元素 + **每个元素绑定的方法和数据字段** |
 | 拿不到 console 日志 | `wx_logs` 持续采集 console / 异常 / unhandledRejection |
-| 报错只有 `login.js:300`，对不上源码 | `wx_errors` 用 sourcemap 映射回 **`login.vue:136` 并附上那几行代码** |
+| 报错只有 `form.js:300`，对不上源码 | `wx_errors` 用 sourcemap 映射回 **`form.vue:136` 并附上那几行代码** |
 | 不能点击、不能填表、不能跑流程 | `wx_tap` / `wx_input` / `wx_navigate` / `wx_call_method` |
 | 不能自己编译，得手动去 IDE 点 | `wx_run` 一步：编译 → 打开开发者工具 → 建立连接 |
 | HBuilderX 工程根本没有命令行编译 | `wx_init` 一条命令补齐（不改目录结构，HBuilderX 照常可用） |
@@ -70,122 +71,300 @@ plugin-claude-code/     Claude Code 插件（/wxgo 入口 + 4 个 skill）
 
 ---
 
-## 快速开始
+## 安装
 
-### 前置条件
+分三步：**① 装前置** → **② 装 wx-agent** → **③ 接进你的 AI 工具**。
 
-1. 装好 **微信开发者工具** 并**扫码登录**
-2. **开发者工具 → 设置 → 安全设置 → 服务端口（CLI/HTTP 调用）** 打开 ← 这是硬前提，关着什么都连不上
-3. Node ≥ 18.17
-4. 可选：`ffmpeg`（连拍合成 GIF 用）
+### ① 前置条件
 
-支持 **macOS / Windows / Linux**。Windows 用户请先看 [Windows 说明](#windows)，那边有几处配置写法不同。
+| 要求 | 说明 |
+|---|---|
+| **Node ≥ 18.17** | `node -v` 检查。建议 20 或 22 |
+| **微信开发者工具** + **扫码登录** | 没登录的话几乎所有命令都会失败 |
+| **服务端口（CLI/HTTP 调用）已开启** | 开发者工具 → 设置 → 安全设置 → 勾上「服务端口」← **这是硬前提，关着什么都连不上** |
+| `ffmpeg`（可选） | 只有连拍合成 GIF 用得到，不装也能截图 |
 
-### 本地开发（尚未发布到 npm 时）
+平台支持情况：
 
-先把三个包 link 到全局，这样 `npx wx-agent-mcp` 和 `wxctl` 都能直接用：
+| 平台 | 状态 | 说明 |
+|---|---|---|
+| **macOS** | ✅ 完整可用 | 开发环境，全部能力都在真机验证过 |
+| **Windows** | ✅ 完整可用 | 平台差异已适配（见下），但**未在 Windows 真机跑过** |
+| **Linux** | ⚠️ 部分可用 | **微信开发者工具没有官方 Linux 版**，详见 [Linux](#linux) |
+
+#### macOS
 
 ```bash
+# Node（用 Homebrew 或 nvm 都行）
+brew install node
+# 或：curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.1/install.sh | bash && nvm install 22
+```
+
+微信开发者工具从 [官方下载页](https://developers.weixin.qq.com/miniprogram/dev/devtools/download.html) 装（选「稳定版 Stable Build」，Apple Silicon 选 ARM64 包）。装到 `/Applications` 即可自动找到。
+
+打开工具 → **扫码登录** → **设置 → 安全设置 → 服务端口** 打开。
+
+#### Windows
+
+```powershell
+# Node：从 https://nodejs.org 下 LTS 安装包，或者
+winget install OpenJS.NodeJS.LTS
+```
+
+微信开发者工具装到默认位置（`C:\Program Files (x86)\Tencent\微信web开发者工具`）就能自动找到。装到别处的话指定一下：
+
+```powershell
+setx WX_DEVTOOLS_CLI "D:\Tools\微信web开发者工具\cli.bat"
+```
+
+> 注意是 **`cli.bat`**，不是 `.exe`。也可以每次用 `wxctl --cli-path "D:\...\cli.bat"`。
+
+**两个 Windows 特有的坑**（`wxctl doctor` 会提前替你检查）：
+
+- **项目路径不能含 `%`**。传参必须经 `cmd.exe`，而它会把 `%xxx%` 当环境变量展开，没有可靠的转义写法。所以 `D:\100%完成\proj` 这类路径会被直接拒绝并报明确错误，而不是让参数被悄悄改写。
+- **路径别太深**。Win32 API 默认 260 字符上限，`node_modules` 很容易撞上，表现是 `npm install` 莫名失败。要么把项目挪到靠近盘符根的位置，要么开启长路径支持（`LongPathsEnabled=1`）。
+
+<a id="linux"></a>
+#### Linux
+
+**微信开发者工具只有 Windows 和 macOS 官方版，没有 Linux 版。** 这不是本项目的限制——所有依赖它的能力（运行、截图、点击、读日志）在 Linux 上都没有官方途径。
+
+不过**不依赖开发者工具的那部分是完整可用的**，在 CI 里尤其有价值：
+
+```bash
+wxctl doctor      # 体检（会如实报告开发者工具缺失）
+wxctl info        # 工程识别
+wxctl init        # HBuilderX 版 uni-app 补齐命令行编译能力
+wxctl compile     # 编译
+wxctl size        # 包体积分析（主包/分包 vs 官方限制）
+wxctl artifacts   # 产物占用
+```
+
+也就是说：**在 Linux CI 上跑「编译 + 体积卡口」是可行的**，只是没法在上面跑 UI 自动化。
+
+如果你用社区的 Linux 移植版（比如 [`msojocs/wechat-devtools-linux`](https://github.com/msojocs/wechat-devtools-linux)），把它的 cli 指过来即可：
+
+```bash
+export WX_DEVTOOLS_CLI=/opt/wechat-devtools/bin/cli
+```
+
+> 社区移植版**未经本项目验证**。它只要提供兼容的 `cli auto --project X --auto-port N`，理论上运行/调试能力就能工作。踩通了欢迎开 issue 告诉我。
+>
+> 需要无头环境上传体验版的话，用微信官方的 [`miniprogram-ci`](https://www.npmjs.com/package/miniprogram-ci)——那个是纯 Node 包，不需要 IDE。
+
+---
+
+### ② 装 wx-agent
+
+> **目前还没发到 npm**，所以要从源码装。发布后会补上 `npm i -g` 的方式。
+
+```bash
+git clone https://github.com/LeelooDev/Build-WX-Apps.git wx-agent
 cd wx-agent
 npm install
 npm link -w wx-agent-core -w wx-agent-mcp -w wx-agent-cli
 ```
 
+`npm link` 之后 `wxctl` 和 `wx-agent-mcp` 就是全局命令了。验证一下：
+
+```bash
+wxctl doctor --dir /你的小程序工程
+```
+
+Windows 上如果 `npm link` 报权限错误，用管理员权限开一次 PowerShell 再跑。
+
+<details>
+<summary>不想全局 link？（点开）</summary>
+
+也可以只在项目里用绝对路径调用，跳过 `npm link`：
+
+```bash
+node /path/to/wx-agent/packages/cli/bin/wxctl.js doctor
+```
+
+MCP 配置里同样可以直接指向文件（见下面各工具的「源码方式」）。
+</details>
+
+---
+
+<a id="接入"></a>
+## ③ 接入你的 AI 工具
+
+核心是一个标准 **MCP server**，所以任何支持 MCP 的工具都能用，26 个工具全都一样。下面按工具给配置。
+
+三个通用约定：
+
+- **`WX_AGENT_PROJECT`** 指向你的小程序工程根目录。省略则取工作目录；每个工具调用也能单独传 `projectDir`。
+- **路径要写绝对路径**，AI 工具启动 MCP server 时的工作目录未必是你想的那个。
+- **Windows 上 `command` 要用 `cmd` + `/c`**。`npm link`（以及以后的 `npm i -g`）在 Windows 上装出来的是 `wx-agent-mcp.cmd`，而 Node 修掉 CVE-2024-27980 之后（18.20.2+ / 20.12.2+），不带 shell 执行批处理文件会抛 `EINVAL`——多数 MCP 客户端正是直接 spawn，所以会起不来。把真正的命令挪到 `args` 里即可。`npx` 同理（它是 `npx.cmd`）。
+
 ### Claude Code
+
+**方式一：装插件**（推荐，附带 9 个小程序专用 skill 和 `/wxgo` 命令）
 
 ```bash
 claude plugin marketplace add /path/to/wx-agent/plugin-claude-code
 claude plugin install wx-agent@wx-agent-local
 ```
 
-> 修改插件源之后必须重装才生效（cache 是副本）：
-> `claude plugin uninstall wx-agent@wx-agent-local && claude plugin install wx-agent@wx-agent-local`，然后在会话里 `/reload-plugins`。
+> 改了插件源之后必须重装才生效（cache 是副本）：
+> `claude plugin uninstall wx-agent@wx-agent-local && claude plugin install wx-agent@wx-agent-local`，然后 `/reload-plugins`。
 
-也可以不装插件，直接在小程序项目根目录放一个 `.mcp.json`：
+**方式二：只挂 MCP server**，在小程序项目根目录放 `.mcp.json`。
 
-```json
-{
-  "mcpServers": {
-    "wx-agent": { "command": "npx", "args": ["-y", "wx-agent-mcp"] }
-  }
-}
-```
-
-然后直接说人话就行：
-
-- "把小程序跑起来，登录页截图给我看看"
-- "填上账号密码点登录，把日志总结一下"
-- "这个页面报错了，帮我看看是哪行"
-
-或者用统一入口 `/wxgo run` / `/wxgo debug` / `/wxgo ui` / `/wxgo init`。
-
-### Codex / Cursor / 其他 MCP 客户端
-
-在各自的 MCP 配置里加：
+macOS / Linux：
 
 ```json
 {
   "mcpServers": {
     "wx-agent": {
-      "command": "npx",
-      "args": ["-y", "wx-agent-mcp@latest"],
-      "env": { "WX_AGENT_PROJECT": "/绝对路径/你的小程序工程" }
+      "command": "wx-agent-mcp",
+      "env": { "WX_AGENT_PROJECT": "/绝对路径/你的工程" }
     }
   }
 }
 ```
 
-`WX_AGENT_PROJECT` 可省略（默认取工作目录），每个工具也都能单独传 `projectDir`。
-
-另见 [`docs/AGENTS.md`](docs/AGENTS.md)，可直接放进项目给 Codex 等工具当上下文。
-
-<a id="windows"></a>
-### Windows
-
-功能一致，但有三处配置不一样。
-
-**1. MCP 配置要经 `cmd`。** Windows 上 `npx` 实际是 `npx.cmd`，而多数 MCP 客户端直接 spawn 它会失败（Node 修掉 CVE-2024-27980 之后，不带 shell 执行批处理文件会抛 `EINVAL`）：
+Windows（注意 `cmd` + `/c`，以及 JSON 里反斜杠要写两个）：
 
 ```json
 {
   "mcpServers": {
     "wx-agent": {
       "command": "cmd",
-      "args": ["/c", "npx", "-y", "wx-agent-mcp@latest"],
-      "env": { "WX_AGENT_PROJECT": "D:\\你的小程序工程" }
+      "args": ["/c", "wx-agent-mcp"],
+      "env": { "WX_AGENT_PROJECT": "D:\\你的工程" }
     }
   }
 }
 ```
 
-**2. 开发者工具的位置。** 默认会去这些地方找 `cli.bat`（`Program Files` / `Program Files (x86)` / `%LOCALAPPDATA%\Programs` 下的 `Tencent\微信web开发者工具`、`Tencent\微信开发者工具`，以及 D、E 盘的同名目录）。装在别处就显式指定：
+没做 `npm link` 的话，把 `command` 换成 `node`、`args` 换成 `["/path/to/wx-agent/packages/mcp/bin/wx-agent-mcp.js"]`。
 
-```powershell
-setx WX_DEVTOOLS_CLI "D:\Tools\微信web开发者工具\cli.bat"
+**用起来**——直接说人话：
+
+- 「把小程序跑起来，登录页截图给我看看」
+- 「填上账号密码点登录，把日志总结一下」
+- 「这个页面报错了，帮我看看是哪行」
+
+或者用统一入口 `/wxgo run` / `/wxgo debug` / `/wxgo ui` / `/wxgo init`。
+
+### Codex
+
+配置在 **`~/.codex/config.toml`**，注意表名是 **snake_case 的 `mcp_servers`**（不是 `mcpServers`）：
+
+```toml
+[mcp_servers.wx-agent]
+command = "wx-agent-mcp"
+
+[mcp_servers.wx-agent.env]
+WX_AGENT_PROJECT = "/绝对路径/你的工程"
 ```
 
-也可以每次用 `wxctl --cli-path "D:\...\cli.bat"`。
+Windows：
 
-**3. 项目路径不能含 `%`。** 传参要经 `cmd.exe`，而它会把 `%xxx%` 当环境变量展开，没有可靠的转义写法。所以 `D:\100%完成\proj` 这类路径会被直接拒绝并报明确错误，而不是让参数被悄悄改写。`wxctl doctor` 会提前检查这一点，顺带检查路径长度（Win32 的 260 字符上限会让 `npm install` 在深目录里失败）。
+```toml
+[mcp_servers.wx-agent]
+command = "cmd"
+args = ["/c", "wx-agent-mcp"]
 
-平台差异都收在 [`packages/core/src/platform.js`](packages/core/src/platform.js) 一个文件里：
+[mcp_servers.wx-agent.env]
+WX_AGENT_PROJECT = "D:\\你的工程"
+```
 
-| 差异 | POSIX | Windows |
-|---|---|---|
-| CLI ↔ daemon 通道 | Unix socket，`~/.wx-agent/run/`（0700） | named pipe，名字带 16 字节随机串（见下） |
-| 跑 `npm` / `npx` | 直接执行 | 走 npm 的 JS 入口，绕开 `.cmd` |
-| 跑开发者工具 cli | 直接执行 | `cmd.exe /d /s /c` + 自行加引号 |
-| 目录链接（`init` 的补丁） | symlink | junction（symlink 需管理员权限） |
-| 访问控制 | 目录权限位 0700 | `%USERPROFILE%` 继承的 NTFS ACL |
-| GIF 合成 | ffmpeg concat demuxer | 同上（不用 `-pattern_type glob`，Windows 构建没编进去） |
-
-> **为什么 Windows 的 pipe 名要带随机串**：控制通道等同于一个无认证的控制接口 —— 连上就能让 daemon 在你的小程序里执行任意 JS。POSIX 下靠 0700 目录挡住其他本地用户，而 `\\.\pipe\` 是**全机器共享且没有权限位**的命名空间。所以 pipe 名用 16 字节随机数，真名存在 `%USERPROFILE%\.wx-agent\run\<key>.pipe`（受 NTFS ACL 保护）—— 猜不到名字就连不上。
-
-### 只用命令行
+也可以用命令行加（`--` 后面是真正要执行的命令）：
 
 ```bash
-npm i -g wx-agent-cli
+codex mcp add wx-agent --env WX_AGENT_PROJECT=/绝对路径/你的工程 -- wx-agent-mcp
+```
 
+另外把 [`docs/AGENTS.md`](docs/AGENTS.md) 拷到你项目根目录，Codex 会自动读它当上下文——里面写了这套工具的用法惯例，能少走弯路。
+
+### Gemini CLI
+
+配置在 **`~/.gemini/settings.json`**（全局）或项目里的 **`.gemini/settings.json`**：
+
+```json
+{
+  "mcpServers": {
+    "wx-agent": {
+      "command": "wx-agent-mcp",
+      "cwd": "/绝对路径/你的工程",
+      "env": { "WX_AGENT_PROJECT": "/绝对路径/你的工程" },
+      "timeout": 600000
+    }
+  }
+}
+```
+
+Windows 把 `command` 换成 `"cmd"`、加 `"args": ["/c", "wx-agent-mcp"]`。
+
+也可以用命令行：
+
+```bash
+gemini mcp add -s user -e WX_AGENT_PROJECT=/绝对路径/你的工程 wx-agent wx-agent-mcp
+```
+
+> `timeout` 建议留足（默认 600000ms）。首次 `wx_run` 要编译 + 拉起开发者工具 + 建连接，冷启动可能超过 60 秒。
+
+### Cursor / Cline / Windsurf / 其他
+
+都是 `mcpServers` 这套 JSON 格式，和上面 Claude Code 的「方式二」完全一样，只是文件位置不同：
+
+| 工具 | 配置文件 |
+|---|---|
+| Cursor | `~/.cursor/mcp.json` 或项目 `.cursor/mcp.json` |
+| Cline / Roo | VS Code 里 Cline 面板 → MCP Servers → Configure |
+| Windsurf | `~/.codeium/windsurf/mcp_config.json` |
+| Zed | `settings.json` 里的 `context_servers` |
+
+### 配置写法速查
+
+| | macOS / Linux | Windows |
+|---|---|---|
+| `command` | `wx-agent-mcp` | `cmd` |
+| `args` | *(不用)* | `["/c", "wx-agent-mcp"]` |
+| 工程路径写法 | `/Users/me/proj` | `D:\\my\\proj`（JSON 里反斜杠要转义） |
+| 没 `npm link` 时 | `node` + `["/path/.../wx-agent-mcp.js"]` | `cmd` + `["/c", "node", "C:\\path\\...\\wx-agent-mcp.js"]` |
+
+### 接上了没有？
+
+问你的 AI：**「跑一下 wx_doctor」**。正常会看到这样的体检表：
+
+```
+工程：/Users/me/proj
+类型：uni-app（CLI 模式） Vue2 · appid wx1234567890abcdef
+
+✅ Node: v22.21.0
+✅ 微信开发者工具: /Applications/wechatwebdevtools.app/Contents/MacOS/cli
+✅ 开发者工具登录态: 已登录
+✅ 工程类型: uniapp-cli (Vue2)
+✅ appid: wx1234567890abcdef
+✅ 依赖: 已安装
+✅ recyclableRender 补丁: 已生效
+✅ 编译产物: …/unpackage/dist/dev/mp-weixin
+✅ sourcemap: …/unpackage/dist/dev/.sourcemap/mp-weixin
+```
+
+有 ❌ 的话它会一并给出修法。Windows 上还会多三项检查（npm 入口、路径含 `%`、路径长度）。
+
+排查顺序：
+
+| 现象 | 原因 |
+|---|---|
+| AI 说没有 wx_* 工具 | MCP server 没起来。先在终端直接跑 `wx-agent-mcp`（应该挂住不退出），再看 AI 工具的 MCP 日志 |
+| Windows 上 MCP 起不来 | `command` 没用 `cmd` + `/c`（见上） |
+| 「找不到微信开发者工具」 | 设 `WX_DEVTOOLS_CLI`；Windows 上注意是 `cli.bat` |
+| 「自动化端口没起来」 | **服务端口没开**。开发者工具 → 设置 → 安全设置 → 服务端口 |
+| 截图/点击报连接错误 | 工程没跑起来。先 `wx_run` |
+
+---
+
+## 只用命令行（不接 AI 工具）
+
+`wxctl` 和 MCP server 共用同一套 core，能力完全一致。适合写脚本、上 CI，或者给没有 MCP 的 AI 工具当兜底。
+
+```bash
 wxctl doctor          # 体检：缺什么一目了然
 wxctl init            # HBuilderX 工程补齐命令行编译能力（只新增文件，可回退）
 wxctl run             # 编译 → 打开开发者工具 → 连上
@@ -195,13 +374,17 @@ wxctl input '.input-field[0]' demo-user
 wxctl tap '.submit-btn'
 wxctl logs --tail 30
 wxctl errors          # 报错 + 源码定位
+
+wxctl help            # 全部命令
 ```
+
+> **Windows 上引号不一样**：`cmd.exe` 不认单引号，selector 要用双引号 —— `wxctl tap ".submit-btn"`。PowerShell 两种都行。
 
 ---
 
 ## 一个真实例子
 
-在 `login.vue` 第 96 行放一个不存在的方法调用，点击登录后：
+在 `form.vue` 第 96 行放一个不存在的方法调用，点击提交后：
 
 ```
 $ wxctl errors
@@ -222,9 +405,9 @@ $ wxctl errors
 
 ```
 可操作元素：
-  .input-field[0]   input   placeholder="账号"        → data.account
-  .input-field[1]   input   placeholder="密码" type=password → data.pwd
-  .submit-btn     button  "登录"                          → tap:onSubmit()
+  .input-field[0]  input   placeholder="账号"                → data.account
+  .input-field[1]  input   placeholder="密码" type=password  → data.pwd
+  .submit-btn      button  "提交"                            → tap:onSubmit()
 ```
 
 箭头后面是从编译产物的 `data-event-opts` 里解析出来的**真实绑定关系**，不是猜的。
@@ -319,6 +502,29 @@ wxctl clean --auto  # 只回收超出上限的部分
   小程序页面内容（可能含诱导性文字），因此只允许写到项目目录或产物目录内。
   CLI 侧不做此限制——那是你本人在敲命令。
 
+## 跨平台是怎么做的
+
+平台差异全部收在 [`packages/core/src/platform.js`](packages/core/src/platform.js) 一个文件里，其余模块不出现 `process.platform` 分支：
+
+| 差异点 | macOS / Linux | Windows |
+|---|---|---|
+| CLI ↔ daemon 通道 | Unix domain socket，`~/.wx-agent/run/`（0700） | named pipe，名字带 16 字节随机串 |
+| 跑 `npm` / `npx` | 直接执行 | 走 npm 的 JS 入口，绕开 `.cmd` |
+| 跑开发者工具 cli | 直接执行 | `cmd.exe /d /s /c` + 自行逐参数加引号 |
+| `init` 的补丁链接 | symlink | junction（symlink 需管理员权限） |
+| 访问控制 | 目录权限位 0700 | `%USERPROFILE%` 继承的 NTFS ACL |
+| 防 symlink 劫持 | `O_NOFOLLOW` | `lstat` 预检（不等价，有 TOCTOU 窗口） |
+| GIF 合成 | ffmpeg concat demuxer | 同上（`-pattern_type glob` 在 Windows 构建里没编进去） |
+| sourcemap 源路径 | `webpack:////abs/...`（四斜杠） | `webpack:///C:/...`（三斜杠 + 盘符） |
+
+两处值得单独说明：
+
+**为什么 Windows 的 pipe 名要带随机串。** 控制通道等同于一个无认证的控制接口——连上就能让 daemon 在你的小程序里执行任意 JS。POSIX 下靠 0700 目录挡住其他本地用户，而 `\\.\pipe\` 是**全机器共享且没有权限位**的命名空间，没有对应物。所以 pipe 名用 16 字节随机数，真名存在 `%USERPROFILE%\.wx-agent\run\<key>.pipe`（受 NTFS ACL 保护）——猜不到名字就连不上。
+
+**为什么 `spawn('npm')` 在 Windows 上会挂。** 那里 `npm` 解析到 `npm.cmd`，而 Node 修掉 CVE-2024-27980 之后（18.20.2+ / 20.12.2+），不带 shell 执行批处理文件直接抛 `EINVAL`。用 `shell: true` 能绕过，但那样参数会交给 cmd 解析，项目路径里的 `&`（`D:\work\A&B\proj` 是真实存在的目录名）会变成命令拼接。所以改成走 npm 的 JS 入口，`.bat` 则经 `cmd.exe` 并自己控制引号。
+
+Windows 分支的逻辑（cmd 引号规则、命令翻译、pipe 名生成、sourcemap 路径形态）都以**显式参数**而非 `process.platform` 驱动，因此在 macOS 上也能被测到——否则那部分代码只有 Windows 用户才跑得到，等于没人验证过。
+
 ## 已知限制
 
 - **只支持 Vue2 版 uni-app 的自动配置**。Vue3 走 vite 工具链，配方完全不同，尚未验证；Vue3 工程可以正常使用运行/调试类能力，只是 `init` 帮不上忙。
@@ -326,7 +532,9 @@ wxctl clean --auto  # 只回收超出上限的部分
 - **selector 只支持简单形式**（`#id` / `.class` / 标签名 / `.class[n]`），这是 miniprogram-automator 的限制，不支持复杂 CSS。
 - **sourcemap 行号 ±1**：`async` 函数被 babel 转译后有固有偏移，所以输出总是带上下文代码片段。
 - **正式发布不在范围内**：提交审核只能在微信公众平台网页端做。
-- **CI 环境**：开发者工具需要 GUI，无头 CI 上传请用官方 `miniprogram-ci`。
+- **Linux 上只有编译类能力**：微信开发者工具没有官方 Linux 版，运行/截图/UI 自动化都依赖它。详见 [Linux](#linux)。
+- **Windows 未在真机验证**：平台差异已适配、逻辑层有测试覆盖，但我手上没有 Windows 机器跑端到端。遇到问题请开 issue，附上 `wxctl doctor --json` 的输出。
+- **CI 环境**：开发者工具需要 GUI，无头 CI 上传请用官方 `miniprogram-ci`。编译和体积检查可以在无头 CI 上跑。
 - **产物回收有 60 秒保护期**：极端情况下（60 秒内截出超过上限的量）会短暂超出上限，等文件过了保护期即被回收。
 
 ---

@@ -1,5 +1,21 @@
-import { WxAgent, analyzeSetData } from 'wx-agent-core'
+import { WxAgent, analyzeSetData, recentErrors, renderDevtoolsErrors } from 'wx-agent-core'
 import { serve } from './ipc.js'
+
+/**
+ * 「端口通了但运行时是死的」的统一说法。
+ *
+ * 这种状态最会骗人：连接秒成功，然后每个调用都挂住。不点名的话，
+ * 表象全都指向 wx-agent 自己有问题，而真因是开发者工具的模拟器没启动起来。
+ */
+function deadRuntimeHint (port) {
+  return [
+    `已连上自动化端口 ${port}，但小程序运行时没有响应 —— 端口在监听不代表小程序在跑。`,
+    '通常是开发者工具的模拟器没真正启动。试：`wxctl run --force-open`。',
+    renderDevtoolsErrors(recentErrors({ limit: 8 })) ?? ''
+  ]
+    .filter(Boolean)
+    .join('\n')
+}
 
 /**
  * daemon 主体：持有一个 WxAgent 实例，把 CLI 发来的命令转成对它的调用。
@@ -40,9 +56,15 @@ export function startDaemon (projectDir, port, sockPath) {
           ? agent.compiler.build({ watch: true })
           : agent.compiler.build({ watch: false })
 
-      case 'connect':
+      case 'connect': {
         await agent.connect()
-        return { ok: true, port: agent.port }
+        const probe = await agent.session.probeRuntime()
+        if (!probe.alive) {
+          agent.resetSession()
+          throw new Error(deadRuntimeHint(agent.port))
+        }
+        return { ok: true, port: agent.port, probeMs: probe.ms }
+      }
 
       case 'sysinfo':
         return agent.session.systemInfo()
@@ -157,7 +179,16 @@ export function startDaemon (projectDir, port, sockPath) {
    * 日志缓冲保留在 agent 上，重连不会丢掉已收集的历史。
    */
   const handler = async (cmd, args) => {
-    if (NEEDS_SESSION.has(cmd) && !agent.session) await agent.connect()
+    if (NEEDS_SESSION.has(cmd) && !agent.session) {
+      await agent.connect()
+      // 新建连接后先探活。不探的话，「模拟器没启动」会伪装成一个个操作各自超时，
+      // 每条命令都得等满超时才知道，而且谁都没说出真正的原因。
+      const probe = await agent.session.probeRuntime()
+      if (!probe.alive) {
+        agent.resetSession()
+        throw new Error(deadRuntimeHint(agent.port))
+      }
+    }
     try {
       return await dispatch(cmd, args)
     } catch (err) {

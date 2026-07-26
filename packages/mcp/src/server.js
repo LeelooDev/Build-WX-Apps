@@ -45,13 +45,21 @@ async function connectedAgent (projectDir) {
     await agent.connect()
     return agent
   }
-  // 会话可能已经死了（开发者工具重启/切项目），探一下活；死了就重连
-  try {
-    await agent.session.page()
-  } catch (err) {
-    if (!WxAgent.isConnectionError(err)) throw err
+  // 会话可能已经死了（开发者工具重启/切项目），探一下活；死了就重连。
+  // 用 probeRuntime 而不是 page()：它走 appservice，最短且带自己的超时，
+  // 不会在运行时卡死时把这里也一起拖住。
+  const probe = await agent.session.probeRuntime()
+  if (!probe.alive) {
     agent.resetSession()
     await agent.connect()
+    const again = await agent.session.probeRuntime()
+    if (!again.alive) {
+      agent.resetSession()
+      throw new Error(
+        `已连上自动化端口 ${agent.port}，但小程序运行时没有响应。\n` +
+          '端口通不代表小程序在跑 —— 多半是开发者工具的模拟器没真正启动。先跑 wx_run（必要时 forceOpen: true）。'
+      )
+    }
   }
   return agent
 }
@@ -128,15 +136,29 @@ export function createServer () {
         ...dirArg,
         dryRun: z.boolean().optional().describe('只列出会改动哪些文件，不实际写入'),
         force: z.boolean().optional().describe('覆盖已存在的 postcss/babel 配置'),
-        install: z.boolean().optional().describe('是否顺带跑 npm install（默认 true，耗时约 1 分钟）')
+        install: z
+          .boolean()
+          .optional()
+          .describe('是否顺带跑 npm install（默认 true）。要装 1500+ 个包，冷缓存下可能十几分钟'),
+        installTimeout: z
+          .number()
+          .optional()
+          .describe('装依赖超时（秒），默认 2700。装到一半超时不会丢文件，按提示手动续跑即可')
       }
     },
-    async ({ projectDir, dryRun, force, install }) => {
+    async ({ projectDir, dryRun, force, install, installTimeout }) => {
       const info = detectProject(projectDir || DEFAULT_DIR)
-      const r = await initProject(info, { dryRun, force, install: install !== false })
+      const r = await initProject(info, {
+        dryRun,
+        force,
+        install: install !== false,
+        installTimeout: installTimeout ? installTimeout * 1000 : undefined
+      })
       const lines = [r.ok ? '✅' : '❌', r.message ?? '']
       if (r.changes?.length) lines.push('', '改动：', ...r.changes.map((c) => `  ${c.kind} ${c.file}`))
       if (r.warnings?.length) lines.push('', ...r.warnings.map((w) => `⚠️ ${w}`))
+      // 文件已写好、只差依赖时，要明确告诉模型「可以续跑」，否则它会去 --revert 重来
+      if (r.resumeHint) lines.push('', r.resumeHint)
       if (r.output && !r.ok) lines.push('', r.output.slice(-2000))
       return r.ok ? text(lines.join('\n')) : fail(lines.join('\n'))
     }
@@ -221,10 +243,15 @@ export function createServer () {
       if (checked?.error) return fail(checked.error)
       const shot = await agent.screenshot({ path: checked })
       const data = fs.readFileSync(shot.path).toString('base64')
+      // canvas 警告必须跟着图一起返回：模型看到的是一张空白画布，
+      // 而空白和"没画上去"在像素上无法区分，不提示就会得出相反的结论。
+      const note = [`已保存到 ${shot.path}（${Math.round(shot.bytes / 1024)} KB）`, shot.warning]
+        .filter(Boolean)
+        .join('\n\n')
       return {
         content: [
           { type: 'image', data, mimeType: 'image/png' },
-          { type: 'text', text: `已保存到 ${shot.path}（${Math.round(shot.bytes / 1024)} KB）` }
+          { type: 'text', text: note }
         ]
       }
     }

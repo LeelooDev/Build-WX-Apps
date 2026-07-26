@@ -10,6 +10,8 @@ import { LogCollector } from './logs.js'
 import { Perf } from './perf.js'
 import { analyzeSize } from './size.js'
 import { ARTIFACT_ROOT, DEFAULT_MAX_BYTES, stats as artifactStats, sweep as sweepArtifacts } from './artifacts.js'
+import { recentErrors, renderDevtoolsErrors } from './devlog.js'
+import { CANVAS_SCREENSHOT_WARNING, pageUsesCanvas } from './canvas.js'
 
 /**
  * 高层门面：把"探测工程 → 编译 → 在开发者工具里打开 → 连上去 → 驱动/观察"串成一条线。
@@ -56,6 +58,7 @@ export class WxAgent {
    */
   async run ({ rebuild = false, watch = false, open = true, forceOpen = false, onOutput = null } = {}) {
     const steps = []
+    const startedAt = Date.now()
 
     // 1) 编译
     const build = rebuild
@@ -93,8 +96,41 @@ export class WxAgent {
     await this.connect()
     steps.push({ step: 'connect', ok: true, port: this.port })
 
+    // 4) 运行时探活 —— 这一步是 run 能不能被信任的关键，见下面的说明
+    const probe = await this.session.probeRuntime()
+    steps.push({ step: 'probe', ok: probe.alive, ms: probe.ms })
+    if (!probe.alive) {
+      this.resetSession()
+      throw new Error(this._deadRuntimeMessage(startedAt, probe))
+    }
+
     const page = await this.session.page()
     return { ok: true, steps, page: page.path, project: this.info.distDir }
+  }
+
+  /**
+   * 「端口通了但运行时是死的」这种状态的报错文案。
+   *
+   * 单独拎出来是因为它值得被说清楚：这是最容易把人带偏的一种失败 ——
+   * 自动化端口在 listen，`automator.connect()` 几毫秒就成功，
+   * 于是所有表象都指向「wx-agent 的 daemon 有问题」，
+   * 而真相是开发者工具的模拟器压根没启动起来。
+   */
+  _deadRuntimeMessage (startedAt, probe) {
+    return [
+      `已连上自动化端口 ${this.port}，但小程序运行时没有响应（探活耗时 ${probe.ms}ms）。`,
+      '这几乎总是「开发者工具把端口开了，但模拟器没真正启动」—— 端口通不代表小程序在跑。',
+      '',
+      '按这个顺序试：',
+      '  1. 看下面开发者工具自己的日志（如果有）；',
+      '  2. `wxctl run --force-open` 强制重启开发者工具再来一次；',
+      '  3. 确认 开发者工具 → 设置 → 安全设置 → 服务端口(CLI/HTTP 调用) 已开启；',
+      '  4. 工具需要联网校验基础库，网络异常（代理/VPN）时模拟器会启动超时。',
+      '',
+      renderDevtoolsErrors(recentErrors({ sinceMs: startedAt })) ?? '（没读到开发者工具日志）',
+      '',
+      `探活原始错误：${probe.error}`
+    ].join('\n')
   }
 
   /** 当前开发者工具里跑着的小程序 appid；拿不到返回 null */
@@ -171,9 +207,29 @@ export class WxAgent {
     if (!this.session) throw new Error('尚未连接小程序。先跑 `wxctl run`，或对已打开的项目跑 `wxctl connect`。')
   }
 
+  /**
+   * 截图。
+   *
+   * 页面里有 canvas 时**必须**附警告：开发者工具不把 `canvas type="2d"` 的内容合成进截图，
+   * 空白画布和渲染失败在像素上无法区分。不提示的话，看图做判断的一方会得出相反的结论。
+   */
   async screenshot (opts) {
     this.assertConnected()
-    return this.capture.screenshot(opts)
+    const shot = await this.capture.screenshot(opts)
+    const canvas = await this._canvasOnCurrentPage()
+    if (!canvas.has) return shot
+    return { ...shot, canvas: { page: canvas.page, wxml: canvas.files }, warning: CANVAS_SCREENSHOT_WARNING }
+  }
+
+  /** 当前页面（含其自定义组件）里有没有 canvas；取不到页面就当没有 */
+  async _canvasOnCurrentPage () {
+    try {
+      const page = await this.session.page()
+      const found = pageUsesCanvas(this.info.distDir, page.path)
+      return { ...found, page: page.path }
+    } catch {
+      return { has: false, files: [], page: null }
+    }
   }
 
   async snapshot (opts) {

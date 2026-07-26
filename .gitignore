@@ -10,3 +10,6 @@ npm-debug.log*
 
 # banner 原图（仓库里用 docs/banner.jpg 那份压缩版）
 /wx.png
+
+# 联调时记录的问题清单，属于本地工作笔记，不进仓库
+/docs/ISSUES-from-*.md

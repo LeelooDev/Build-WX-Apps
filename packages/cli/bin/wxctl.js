@@ -28,6 +28,8 @@ const HELP = `wxctl —— 微信小程序开发的命令行控制器
           --revert               撤销 init 的全部改动
           --force                覆盖已存在的 postcss/babel 配置
           --no-install           只生成文件，不跑 npm install
+          --install-timeout <秒>  装依赖的超时（默认 2700 秒 = 45 分钟）
+                                 等价于环境变量 WX_AGENT_INSTALL_TIMEOUT
 
 跑起来
   compile [dir] [--watch]      只编译
@@ -115,9 +117,26 @@ function resolveDir (flags, positional, consumePositional = false) {
   return process.cwd()
 }
 
+/**
+ * 每条命令给 daemon 的等待上限。
+ *
+ * 以前是所有命令统一 600 秒。问题不在数字大小，而在于**一个 10 分钟的大黑盒**：
+ * 一次 `tap` 卡住也要等满十分钟，等完只得到一句「daemon 响应超时」，
+ * 什么都没说明。所以按命令性质分档 —— 长任务给足，交互操作快速失败，
+ * 让 daemon 那边自己的超时（带降级指路）先说话。
+ */
+const LONG_RUNNING = new Set(['run', 'compile', 'record', 'reload', 'preview', 'upload'])
+
+function daemonTimeoutFor (cmd) {
+  if (LONG_RUNNING.has(cmd)) return 600000
+  // 比 daemon 内部单步超时留一点余量，好让它的错误信息先返回来
+  const op = Number(process.env.WX_AGENT_OP_TIMEOUT) || 30000
+  return op + 15000
+}
+
 async function callDaemon (dir, port, cmd, args = {}) {
   const { sockPath } = await ensureDaemon(dir, { port })
-  const res = await request(sockPath, { cmd, args })
+  const res = await request(sockPath, { cmd, args }, { timeout: daemonTimeoutFor(cmd) })
   if (!res) throw new Error(`连不上 daemon（${sockPath}），日志见 ${logPathFor(dir)}`)
   if (!res.ok) throw new Error(res.error)
   return res.data
@@ -169,11 +188,17 @@ async function main () {
         out('init', revertInit(info))
         break
       }
-      out('init', await initProject(info, {
+      const r = await initProject(info, {
         dryRun: Boolean(flags.dryRun),
         force: Boolean(flags.force),
-        install: flags.install !== false && !flags.noInstall
-      }))
+        install: flags.install !== false && !flags.noInstall,
+        installTimeout: flags.installTimeout ? Number(flags.installTimeout) * 1000 : undefined,
+        // 装依赖是分钟级的长任务。进度直接写 stderr：不污染 --json 的 stdout，
+        // 又能让人和 AI 都看得见「还在跑」而不是「卡死了」。
+        onProgress: json ? null : (msg) => process.stderr.write(`${msg}\n`)
+      })
+      out('init', r)
+      if (!r.ok) process.exitCode = 1
       break
     }
 

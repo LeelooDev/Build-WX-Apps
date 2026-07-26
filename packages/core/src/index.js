@@ -30,6 +30,9 @@ export {
   sweep as sweepArtifacts,
   renderArtifactStats
 } from './artifacts.js'
-export { initProject, revertInit, doctor } from './init.js'
+export { initProject, revertInit, doctor, defaultInstallTimeout } from './init.js'
 export { parseWxml, outline, interactiveList, selectorFor, isInteractive } from './wxml.js'
+export { OpTimeoutError, defaultOpTimeout, isTimeout, withTimeout } from './timeout.js'
+export { devtoolsUserDir, latestSessionLog, recentErrors, renderDevtoolsErrors } from './devlog.js'
+export { CANVAS_SCREENSHOT_WARNING, pageUsesCanvas } from './canvas.js'
 export * as recipes from './recipes.js'

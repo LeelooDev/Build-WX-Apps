@@ -14,7 +14,7 @@ export function render (kind, data) {
     case 'run':
       return renderRun(data)
     case 'screenshot':
-      return `📸 ${data.path}  (${fmtBytes(data.bytes)})`
+      return renderScreenshot(data)
     case 'snapshot':
       return renderSnapshot(data)
     case 'logs':
@@ -74,7 +74,18 @@ function renderInit (r) {
     lines.push('')
     lines.push(`${r.ok ? '✅' : '❌'} ${r.message}`)
   }
+  // 装依赖失败但文件都写好了 —— 这句必须显眼，否则用户会以为得 --revert 重来
+  if (r.resumeHint) lines.push('', r.resumeHint)
   if (r.output && !r.ok) lines.push(`\n${r.output}`)
+  return lines.join('\n')
+}
+
+function renderScreenshot (r) {
+  const lines = [`📸 ${r.path}  (${fmtBytes(r.bytes)})`]
+  if (r.warning) {
+    lines.push('', r.warning)
+    if (r.canvas?.wxml?.length) lines.push(`  （canvas 出现在：${r.canvas.wxml.join('、')}）`)
+  }
   return lines.join('\n')
 }
 
@@ -115,6 +126,8 @@ function renderRun (r) {
       lines.push(`        ${s.project}`)
     }
     if (s.step === 'connect') lines.push(`  连接  ok`)
+    // 探活单独列出来：端口通不代表小程序在跑，这一步过了才算真的起来了
+    if (s.step === 'probe') lines.push(`  探活  ${s.ok ? `运行时有响应 (${s.ms}ms)` : '无响应'}`)
   }
   lines.push('', `当前页面：${r.page}`)
   lines.push('接着可以：wxctl snapshot / wxctl screenshot / wxctl logs')

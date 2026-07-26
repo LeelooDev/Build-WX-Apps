@@ -24,7 +24,14 @@ const MANIFEST = 'init-manifest.json'
  * 只做加法（新增文件 / 往 package.json 补字段），所有改动记在
  * .wx-agent/init-manifest.json 里，`wxctl init --revert` 可以完整撤销。
  */
-export async function initProject (info, { dryRun = false, install = true, force = false } = {}) {
+/**
+ * @param {{dryRun?:boolean, install?:boolean, force?:boolean,
+ *          installTimeout?:number, onProgress?:(msg:string)=>void}} opts
+ */
+export async function initProject (
+  info,
+  { dryRun = false, install = true, force = false, installTimeout = defaultInstallTimeout(), onProgress = null } = {}
+) {
   const changes = []
   const warnings = []
   const root = info.root
@@ -112,11 +119,26 @@ export async function initProject (info, { dryRun = false, install = true, force
 
   // 5. 装依赖（顺带触发 postinstall 打补丁）
   if (install) {
-    const r = await runNpm(['install', '--no-audit', '--no-fund'], root)
+    onProgress?.(`开始安装依赖（超时 ${humanDuration(installTimeout)}）…`)
+    const r = await runNpm(['install', '--no-audit', '--no-fund'], root, {
+      timeout: installTimeout,
+      onProgress
+    })
     if (!r.ok) {
+      // 关键：文件其实都已经写好了，只差依赖。不说清楚的话，用户会以为要 --revert 重来。
       return {
         ok: false,
         message: `npm install 失败：${r.message}`,
+        resumable: true,
+        resumeHint:
+          `配置文件已全部写入（共 ${changes.length} 处），只差依赖。直接续上即可，不需要 --revert：\n` +
+          `  cd ${root}\n` +
+          '  npm install --no-audit --no-fund\n' +
+          '  wxctl doctor\n' +
+          (r.timedOut
+            ? `提示：这套配方要装 1500+ 个包，npm 缓存冷的时候确实会慢。` +
+              `加大超时用 \`wxctl init --install-timeout 3600\` 或 WX_AGENT_INSTALL_TIMEOUT=3600（单位秒）。`
+            : ''),
         output: r.output,
         changes,
         warnings
@@ -125,6 +147,7 @@ export async function initProject (info, { dryRun = false, install = true, force
     changes.push({ file: 'node_modules', kind: 'install' })
 
     // postinstall 理论上已经跑过，保险起见再跑一次（幂等）
+    onProgress?.('打 recyclableRender 补丁…')
     await runNode([path.join(agentDir, 'postinstall.mjs')], root)
   }
 
@@ -289,15 +312,40 @@ function patchApplied (root) {
   return exists(link)
 }
 
-function runNpm (args, cwd) {
-  return runCmd('npm', args, cwd)
+/**
+ * npm install 的默认超时。
+ *
+ * 原来是 15 分钟，不够 —— 这套配方要装 1500+ 个包（vue-cli-service 4.5 + webpack4 +
+ * sass 要编原生 + @dcloudio 全家桶）。实测：npm 缓存是冷的时候 15 分钟装不完，
+ * 缓存热了之后同样的树只要 1 分钟。也就是说超时与否取决于用户机器上有没有缓存，
+ * 而失败的代价是「文件都写好了却告诉你失败」，非常不划算。
+ *
+ * 可用 WX_AGENT_INSTALL_TIMEOUT（秒）或 `wxctl init --install-timeout <秒>` 覆盖。
+ */
+export function defaultInstallTimeout () {
+  const raw = Number(process.env.WX_AGENT_INSTALL_TIMEOUT)
+  return Number.isFinite(raw) && raw > 0 ? raw * 1000 : 45 * 60 * 1000
+}
+
+/** 毫秒 → 人话。不足一分钟就说秒，别显示成「0 分钟」 */
+function humanDuration (ms) {
+  return ms < 60000 ? `${Math.max(1, Math.round(ms / 1000))} 秒` : `${Math.round(ms / 60000)} 分钟`
+}
+
+function runNpm (args, cwd, opts) {
+  return runCmd('npm', args, cwd, opts)
 }
 
 function runNode (args, cwd) {
   return runCmd(process.execPath, args, cwd)
 }
 
-function runCmd (cmd, args, cwd, timeout = 900000) {
+/**
+ * @param {{timeout?:number, onProgress?:(msg:string)=>void, heartbeat?:number}} opts
+ *   onProgress：装包是长任务，不给信号的话调用方无法区分「在装」和「卡死」。
+ *   实测那次跑满 15 分钟没有一个字输出，只能去 ps 看进程 —— 这不该是用户要做的事。
+ */
+function runCmd (cmd, args, cwd, { timeout = defaultInstallTimeout(), onProgress = null, heartbeat = 30000 } = {}) {
   return new Promise((resolve) => {
     // Windows 上 `npm` 解析成 npm.cmd，直接 spawn 会 EINVAL（Node ≥18.20）。
     // spawnSpec 改走 npm 的 JS 入口，顺带保证用的是当前这个 node。
@@ -314,19 +362,50 @@ function runCmd (cmd, args, cwd, timeout = 900000) {
       ...spec.opts
     })
     let buf = ''
-    const timer = setTimeout(() => {
-      p.kill('SIGTERM')
-      resolve({ ok: false, message: '超时', output: buf.slice(-4000) })
-    }, timeout)
-    p.stdout.on('data', (c) => (buf += c))
-    p.stderr.on('data', (c) => (buf += c))
-    p.on('exit', (code) => {
+    const startedAt = Date.now()
+    let lastLine = ''
+    let timer = null
+    let beat = null
+
+    const finish = (r) => {
       clearTimeout(timer)
-      resolve({ ok: code === 0, message: code === 0 ? 'ok' : `退出码 ${code}`, output: buf.slice(-4000) })
+      if (beat) clearInterval(beat)
+      resolve(r)
+    }
+
+    timer = setTimeout(() => {
+      p.kill('SIGTERM')
+      finish({
+        ok: false,
+        message: `超时（${Math.round(timeout / 1000)}s）`,
+        timedOut: true,
+        output: buf.slice(-4000)
+      })
+    }, timeout)
+
+    // 心跳：装包期间每隔一会儿报一次「还活着」，附上 npm 最近一行输出。
+    // 没有它的话，长任务和卡死在外部看来是同一回事。
+    beat = onProgress
+      ? setInterval(() => {
+          const min = ((Date.now() - startedAt) / 60000).toFixed(1)
+          onProgress(lastLine ? `… 仍在安装（已 ${min} 分钟）：${lastLine}` : `… 仍在安装（已 ${min} 分钟）`)
+        }, heartbeat)
+      : null
+    beat?.unref?.()
+
+    const take = (c) => {
+      const s = String(c)
+      buf += s
+      const lines = s.split('\n').map((l) => l.trim()).filter(Boolean)
+      if (lines.length) lastLine = lines[lines.length - 1].slice(0, 120)
+    }
+    p.stdout.on('data', take)
+    p.stderr.on('data', take)
+    p.on('exit', (code) => {
+      finish({ ok: code === 0, message: code === 0 ? 'ok' : `退出码 ${code}`, output: buf.slice(-4000) })
     })
     p.on('error', (e) => {
-      clearTimeout(timer)
-      resolve({ ok: false, message: e.message, output: buf })
+      finish({ ok: false, message: e.message, output: buf })
     })
   })
 }

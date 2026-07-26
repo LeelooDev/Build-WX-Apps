@@ -378,6 +378,13 @@ wxctl errors          # 报错 + 源码定位
 wxctl help            # 全部命令
 ```
 
+超时相关的两个环境变量（默认值够用，卡住时再动）：
+
+```bash
+WX_AGENT_OP_TIMEOUT=30000        # 单步操作超时（毫秒）。tap/input/snapshot 这类
+WX_AGENT_INSTALL_TIMEOUT=2700    # wxctl init 装依赖的超时（秒）
+```
+
 > **Windows 上引号不一样**：`cmd.exe` 不认单引号，selector 要用双引号 —— `wxctl tap ".submit-btn"`。PowerShell 两种都行。
 
 ---
@@ -527,7 +534,20 @@ Windows 分支的逻辑（cmd 引号规则、命令翻译、pipe 名生成、sou
 
 ## 已知限制
 
+- **截图拍不到 canvas**。开发者工具**不把 `canvas type="2d"` 的同层渲染内容合成进截图** —— 画得好好的画布，截出来是一片空白，和「渲染失败」在像素上无法区分。
+  实测验证过：整块画布填成不透明红色，`getImageData` 显示 104160/104160 像素全部非透明，截图依然全白。
+  所以页面里有 canvas 时，`wxctl screenshot` / `wx_screenshot` 会自动附一条警告并指出 canvas 在哪个组件。
+  要判断到底画没画，用 `wxctl eval` 读像素：`const d = ctx.getImageData(0,0,w,h).data; let n=0; for(let i=3;i<d.length;i+=4) if(d[i]) n++; return n`。
+- **page 级 API 可能整条卡死**。某些开发者工具/基础库组合下，automator 的 page 代理会**不 resolve 也不 reject**
+  （`page.data()` / `page.$()` / `page.callMethod()` 全挂），而同一条连接上 `mp.evaluate` / 截图完全正常。
+  所有操作都带超时（默认 30 秒，`WX_AGENT_OP_TIMEOUT` 可调），超时会明确告诉你改走 `wxctl eval` / `wx_eval`。
+  uni-app 走 eval 时注意：`page.setData()` 不会同步到 Vue 实例，要改 `getCurrentPages().pop().$vm` 上的字段。
+- **端口通 ≠ 小程序在跑**。开发者工具启动异常时（模拟器启动超时、IDE cli server 没起来），自动化端口照样会 listen，
+  `connect` 秒成功但之后所有调用无响应。`run` / `connect` 会做一次运行时探活并把开发者工具自己的日志摘出来，
+  但**恢复只能靠重启开发者工具**（`wxctl run --force-open`）。
 - **只支持 Vue2 版 uni-app 的自动配置**。Vue3 走 vite 工具链，配方完全不同，尚未验证；Vue3 工程可以正常使用运行/调试类能力，只是 `init` 帮不上忙。
+- **`init` 装依赖是分钟级的**。这套配方要装 1500+ 个包，npm 缓存冷的时候实测超过 15 分钟，热了之后只要 1 分钟。
+  默认超时 45 分钟，`--install-timeout <秒>` 或 `WX_AGENT_INSTALL_TIMEOUT` 可调；超时也不会丢文件，按提示手动 `npm install` 续上即可。
 - **日志有时间窗口**：只从建立连接那一刻起才开始采集。要先连上，再触发行为，然后才看得到。
 - **selector 只支持简单形式**（`#id` / `.class` / 标签名 / `.class[n]`），这是 miniprogram-automator 的限制，不支持复杂 CSS。
 - **sourcemap 行号 ±1**：`async` 函数被 babel 转译后有固有偏移，所以输出总是带上下文代码片段。

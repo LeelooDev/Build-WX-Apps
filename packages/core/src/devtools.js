@@ -5,6 +5,7 @@ import path from 'node:path'
 import { promisify } from 'node:util'
 import { exists, sleep, waitUntil } from './util.js'
 import { IS_WIN, spawnSpec } from './platform.js'
+import { recentErrors, renderDevtoolsErrors } from './devlog.js'
 
 const execFileAsync = promisify(execFile)
 
@@ -152,17 +153,22 @@ export class DevTools {
   /**
    * 打开项目并启用自动化端口。
    *
-   * 三个实测出来的坑，顺序不能乱：
+   * 四个实测出来的坑，顺序不能乱：
    * 1. IDE 进程没在跑时直接 `cli auto`，可能撞上残留的端口记录（"IDE may already started at
    *    port 44425, trying to connect" → 超时失败）。所以先把 GUI 拉起来。
-   * 2. `cli auto` 返回成功之后，自动化端口还要几秒才真正 listen。立刻判定"没起来"会误判。
-   * 3. IDE 已经开着**别的**项目时，对新项目 auto 确实不会重新绑定端口 —— 这时才需要 quit 重来。
+   * 2. **进程起来 ≠ 能接命令。** 冷启动时 IDE 内部的 cli server 还没就绪就去 `cli auto`，
+   *    会撞上 `start cli server error` + `simulator launch catch error timeout` ——
+   *    最恶心的是这种情况下**自动化端口照样会 listen**，于是连接成功、调用全挂，
+   *    表面上完全看不出是启动没完成。所以必须先等 CLI 真的能应答（waitForCliReady）。
+   * 3. `cli auto` 返回成功之后，自动化端口还要几秒才真正 listen。立刻判定"没起来"会误判。
+   * 4. IDE 已经开着**别的**项目时，对新项目 auto 确实不会重新绑定端口 —— 这时才需要 quit 重来。
    *
    * @param {string} projectPath 要打开的目录（uni-app 传编译产物目录，不是源码目录）
    * @param {number} port 自动化端口
    */
   async openWithAutomation (projectPath, port = 9420, { forceRestart = false, reuseIfLive = true } = {}) {
     this.assertAvailable()
+    const startedAt = Date.now()
 
     // 端口已经活着就直接复用 —— 不要每次都去 `cli auto`，更不要动不动 quit 重开。
     // 用户已经开好的窗口被反复关掉重开是非常糟糕的体验。
@@ -175,9 +181,12 @@ export class DevTools {
       await this.quit()
       await sleep(3000)
     }
-    if (!(await this.isRunning())) {
+    const wasRunning = await this.isRunning()
+    if (!wasRunning) {
       await this.launchGui()
     }
+    // 坑 2：冷启动必须等 IDE 的 cli server 真的能应答，否则 auto 会「成功一半」
+    const cliReady = await this.waitForCliReady({ timeout: wasRunning ? 20000 : 120000 })
 
     const tryOnce = async () => {
       const r = await this.run(['auto', '--project', projectPath, '--auto-port', String(port)])
@@ -206,11 +215,37 @@ export class DevTools {
 
     if (!up) {
       throw new Error(
-        `自动化端口 ${port} 没起来。请确认：开发者工具 → 设置 → 安全设置 → 服务端口(CLI/HTTP 调用) 已开启。\n` +
-          `cli 输出：\n${r.stdout}\n${r.stderr}`
+        [
+          `自动化端口 ${port} 没起来。请确认：开发者工具 → 设置 → 安全设置 → 服务端口(CLI/HTTP 调用) 已开启。`,
+          cliReady ? null : '（另外：等 IDE cli server 就绪也超时了，工具本身可能启动异常）',
+          `cli 输出：\n${r.stdout}\n${r.stderr}`,
+          renderDevtoolsErrors(recentErrors({ sinceMs: startedAt }))
+        ]
+          .filter(Boolean)
+          .join('\n')
       )
     }
-    return { port, output: r.stdout }
+    return { port, output: r.stdout, cliReady, startedAt }
+  }
+
+  /**
+   * 等 IDE 内部的 cli server 能接命令。
+   *
+   * `isRunning()` 只看进程在不在 —— 冷启动时进程早就在了，但 IDE 还在初始化，
+   * 这段窗口里发 `cli auto` 就是坑 2。用一条无副作用的 `islogin` 做探针：
+   * 它能正常返回，说明 IDE 的命令通道已经通了。
+   *
+   * 探不通不抛错，只返回 false：万一是登录态之类的别的问题，也不该直接堵死流程 ——
+   * 让后面的 auto 去试，失败时再把开发者工具日志一并报出来。
+   */
+  async waitForCliReady ({ timeout = 120000, interval = 2000 } = {}) {
+    const deadline = Date.now() + timeout
+    for (;;) {
+      const r = await this.run(['islogin'], { timeout: 20000 })
+      if (r.ok) return true
+      if (Date.now() > deadline) return false
+      await sleep(interval)
+    }
   }
 
   /** 开发者工具应用包路径（macOS 的 .app，从 cli 路径反推） */

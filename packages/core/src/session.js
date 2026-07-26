@@ -1,6 +1,7 @@
 import automator from 'miniprogram-automator'
 import { LogCollector } from './logs.js'
 import { portListening } from './devtools.js'
+import { withTimeout } from './timeout.js'
 
 /**
  * 与运行中的小程序的一次会话。
@@ -34,19 +35,50 @@ export class Session {
     return new Session(mp, { port, logs: collector })
   }
 
+  /**
+   * 运行时是否真的活着。
+   *
+   * 为什么需要单独探这一下：**自动化端口能连上，不代表小程序在跑**。
+   * 开发者工具冷启动时会出现「IDE server 没起来 → 模拟器启动超时」，
+   * 而端口照常 listen —— `automator.connect()` 几毫秒就成功，
+   * 但之后每一个调用都无限挂起。不探活的话，这种状态只会表现为
+   * 「daemon 响应超时」，把人引向完全错误的方向（以为是 daemon 的问题）。
+   *
+   * 用 `evaluate` 而不是 `currentPage()`：evaluate 直达 appservice，
+   * 是最短、最不依赖渲染层的一条链路。
+   *
+   * 注意 automator 的 evaluate 取参数的 `.toString()` 当**函数声明**发过去，
+   * 传裸的 `'return 1'` 会在小程序侧构造函数失败 —— 那是「探针自己坏了」，
+   * 不是「运行时死了」，两者必须区分开，否则这层保护会到处误报。
+   *
+   * @returns {Promise<{alive:boolean, ms:number, value?:any, error?:string}>}
+   */
+  async probeRuntime ({ timeout = 10000 } = {}) {
+    const t0 = Date.now()
+    try {
+      const value = await withTimeout(() => this.mp.evaluate(() => 1), {
+        ms: timeout,
+        label: '运行时探活'
+      })
+      return { alive: true, ms: Date.now() - t0, value }
+    } catch (err) {
+      return { alive: false, ms: Date.now() - t0, error: err?.message ?? String(err) }
+    }
+  }
+
   /** 当前页面 */
   async page () {
-    return this.mp.currentPage()
+    return withTimeout(() => this.mp.currentPage(), { label: 'currentPage()' })
   }
 
   /** 页面栈路径列表 */
   async pageStack () {
-    const stack = await this.mp.pageStack()
+    const stack = await withTimeout(() => this.mp.pageStack(), { label: 'pageStack()' })
     return stack.map((p) => p.path)
   }
 
   async systemInfo () {
-    return this.mp.systemInfo()
+    return withTimeout(() => this.mp.systemInfo(), { label: 'systemInfo()' })
   }
 
   /**
